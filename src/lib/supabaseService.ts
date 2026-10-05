@@ -138,6 +138,7 @@ export async function sbGetActiveSemester(): Promise<SemesterSettings | null> {
     .from('semester_settings')
     .select('*')
     .eq('active', true)
+    .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -148,7 +149,8 @@ export async function sbGetActiveSemester(): Promise<SemesterSettings | null> {
   const { data: fallback } = await supabase
     .from('semester_settings')
     .select('*')
-    .eq('id', DEFAULT_SEMESTER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   return fallback ? mapSemesterRow(fallback) : null;
@@ -161,19 +163,15 @@ export async function sbGetAllSemesters(): Promise<SemesterSettings[]> {
   return data.map(mapSemesterRow);
 }
 
-export async function sbSaveSemester(semester: SemesterSettings): Promise<void> {
+export async function sbSaveSemester(
+  semester: SemesterSettings,
+  previousSemesterId?: string
+): Promise<void> {
   if (!supabase) return;
   try {
     localStorage.setItem(`ds_google_form_url_${semester.id}`, (semester.googleFormUrl || '').trim());
   } catch {
     // Ignore
-  }
-
-  if (semester.active) {
-    await supabase
-      .from('semester_settings')
-      .update({ active: false })
-      .neq('id', semester.id);
   }
 
   const payloadWithForm: Record<string, any> = {
@@ -193,13 +191,92 @@ export async function sbSaveSemester(semester: SemesterSettings): Promise<void> 
     updated_at: new Date().toISOString(),
   };
 
+  // 1. Upsert the target semester row first (so foreign keys can reference semester.id)
   const { error } = await supabase.from('semester_settings').upsert(payloadWithForm);
   if (error) {
-    // Fallback if google_form_url or updated_at column was not added to existing Supabase table yet
     const { google_form_url, updated_at, ...fallbackPayload } = payloadWithForm;
     const { error: retryErr } = await supabase.from('semester_settings').upsert(fallbackPayload);
     if (retryErr) throw retryErr;
   }
+
+  // 2. Find any other semester rows (e.g. when year or semester changed from 2026-2 to 2027-1)
+  const { data: allSems } = await supabase
+    .from('semester_settings')
+    .select('id')
+    .neq('id', semester.id);
+
+  const oldIds = new Set<string>();
+  if (previousSemesterId && previousSemesterId !== semester.id) {
+    oldIds.add(previousSemesterId);
+  }
+  if (allSems) {
+    allSems.forEach((r: any) => {
+      if (r.id && r.id !== semester.id) oldIds.add(r.id);
+    });
+  }
+
+  // 3. Migrate child records (classes, personal schedules, students, appointments, slot_locks)
+  // to the new semester.id and remove stale semester_settings rows so the table stays clean
+  for (const oldId of oldIds) {
+    // Migrate class_schedules and sync their start_date / end_date to the new semester period
+    await supabase
+      .from('class_schedules')
+      .update({
+        semester_id: semester.id,
+        start_date: semester.startDate,
+        end_date: semester.endDate,
+      })
+      .eq('semester_id', oldId);
+
+    // Migrate personal_schedules
+    await supabase
+      .from('personal_schedules')
+      .update({ semester_id: semester.id })
+      .eq('semester_id', oldId);
+
+    // Migrate appointments
+    await supabase
+      .from('appointments')
+      .update({ semester_id: semester.id })
+      .eq('semester_id', oldId);
+
+    // Migrate slot_locks
+    await supabase
+      .from('slot_locks')
+      .update({ semester_id: semester.id })
+      .eq('semester_id', oldId);
+
+    // Migrate students (since primary key id is `${semesterId}_${studentId}`)
+    const { data: oldStudents } = await supabase
+      .from('students')
+      .select('*')
+      .eq('semester_id', oldId);
+
+    if (oldStudents && oldStudents.length > 0) {
+      const migratedStudents = oldStudents.map((st: any) => ({
+        id: `${semester.id}_${st.student_id}`,
+        semester_id: semester.id,
+        student_id: st.student_id,
+        name: st.name || '',
+        active: Boolean(st.active),
+        first_semester_in_person: st.first_semester_in_person ?? true,
+      }));
+      await supabase.from('students').upsert(migratedStudents);
+      await supabase.from('students').delete().eq('semester_id', oldId);
+    }
+
+    // Delete old semester_settings row so only the updated row remains in Supabase
+    await supabase.from('semester_settings').delete().eq('id', oldId);
+  }
+
+  // Also ensure existing class schedules in the same semester have updated start_date/end_date if needed
+  await supabase
+    .from('class_schedules')
+    .update({
+      start_date: semester.startDate,
+      end_date: semester.endDate,
+    })
+    .eq('semester_id', semester.id);
 }
 
 export async function sbUpdateSemesterGoogleFormUrl(
@@ -801,4 +878,102 @@ export async function sbCancelAppointmentByAdmin(
   const { subSlots } = getAppointmentSubSlots(apt.startTime, 60);
   const lockIds = subSlots.map((slot) => `${apt.date}_${slot}`);
   await supabase.from('slot_locks').delete().in('id', lockIds);
+}
+
+export async function sbUpdateAppointmentByAdmin(
+  appointmentId: string,
+  updates: {
+    studentName: string;
+    studentId: string;
+    phone: string;
+    date: string;
+    startTime: string;
+    consultationType: 'in_person' | 'online';
+    status: 'confirmed' | 'canceled';
+  }
+): Promise<void> {
+  if (!supabase) return;
+  const { data: oldRow } = await supabase
+    .from('appointments')
+    .select('*')
+    .eq('appointment_id', appointmentId)
+    .maybeSingle();
+
+  if (!oldRow) return;
+  const oldApt = mapAppointmentRow(oldRow);
+
+  // 1. Remove old slot locks
+  const oldSub = getAppointmentSubSlots(oldApt.startTime, 60);
+  const oldLockIds = oldSub.subSlots.map((slot) => `${oldApt.date}_${slot}`);
+  if (oldLockIds.length > 0) {
+    await supabase.from('slot_locks').delete().in('id', oldLockIds);
+  }
+
+  // 2. Calculate new endTime and timestamps
+  const { subSlots: newSubSlots, endTime: newEndTime } = getAppointmentSubSlots(
+    updates.startTime,
+    60
+  );
+  const startAt = `${updates.date}T${updates.startTime}:00+09:00`;
+  const endAt = `${updates.date}T${newEndTime}:00+09:00`;
+
+  // 3. Update appointments table
+  const { error: updErr } = await supabase
+    .from('appointments')
+    .update({
+      student_name: updates.studentName.trim(),
+      student_id: updates.studentId.trim(),
+      phone: updates.phone.trim(),
+      date: updates.date,
+      start_time: updates.startTime,
+      end_time: newEndTime,
+      start_at: startAt,
+      end_at: endAt,
+      consultation_type: updates.consultationType,
+      status: updates.status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('appointment_id', appointmentId);
+  if (updErr) throw updErr;
+
+  // 4. If status is confirmed, upsert new slot locks
+  if (updates.status === 'confirmed') {
+    const newLocks = newSubSlots.map((slot) => {
+      const lockId = `${updates.date}_${slot}`;
+      return {
+        id: lockId,
+        slot_key: lockId,
+        date: updates.date,
+        time: slot,
+        type: 'appointment',
+        semester_id: oldApt.semesterId,
+        reference_id: appointmentId,
+      };
+    });
+    await supabase.from('slot_locks').upsert(newLocks);
+  }
+}
+
+export async function sbDeleteAppointmentByAdmin(appointmentId: string): Promise<void> {
+  if (!supabase) return;
+  const { data: aptRow } = await supabase
+    .from('appointments')
+    .select('*')
+    .eq('appointment_id', appointmentId)
+    .maybeSingle();
+
+  if (aptRow) {
+    const apt = mapAppointmentRow(aptRow);
+    const { subSlots } = getAppointmentSubSlots(apt.startTime, 60);
+    const lockIds = subSlots.map((slot) => `${apt.date}_${slot}`);
+    if (lockIds.length > 0) {
+      await supabase.from('slot_locks').delete().in('id', lockIds);
+    }
+  }
+
+  const { error } = await supabase
+    .from('appointments')
+    .delete()
+    .eq('appointment_id', appointmentId);
+  if (error) throw error;
 }

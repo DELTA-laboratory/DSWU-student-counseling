@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, writeBatch, serverTimestamp, getDoc } from 'firebase/firestore';
+import { collection, doc, writeBatch, serverTimestamp, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 import { isSupabaseConfigured, supabase } from './supabase';
 import { SemesterSettings } from '../types';
@@ -58,19 +58,18 @@ export const SAMPLE_STUDENTS = [
 ];
 
 /**
- * Initializes the default 2026-2 semester, sample professor classes, and registered student IDs
- * if not already initialized in the database.
+ * Initializes the default semester ONLY if the semester_settings table is completely empty.
+ * Never overwrites or re-inserts sample data if the professor has already configured any semester.
  */
 export async function seedInitialDataIfNeeded(): Promise<boolean> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data: existing } = await supabase
+      const { data: existingRows, error } = await supabase
         .from('semester_settings')
         .select('id')
-        .eq('id', '2026-2')
-        .maybeSingle();
+        .limit(1);
 
-      if (existing) {
+      if (error || (existingRows && existingRows.length > 0)) {
         return false;
       }
 
@@ -90,29 +89,6 @@ export async function seedInitialDataIfNeeded(): Promise<boolean> {
         active: true,
       });
 
-      await supabase.from('class_schedules').insert(
-        SAMPLE_CLASSES.map((cls) => ({
-          semester_id: cls.semesterId,
-          title: cls.title,
-          weekday: cls.weekday,
-          start_time: cls.startTime,
-          end_time: cls.endTime,
-          start_date: cls.startDate,
-          end_date: cls.endDate,
-        }))
-      );
-
-      await supabase.from('students').upsert(
-        SAMPLE_STUDENTS.map((st) => ({
-          id: `2026-2_${st.studentId}`,
-          semester_id: '2026-2',
-          student_id: st.studentId,
-          name: st.name,
-          active: true,
-          first_semester_in_person: true,
-        }))
-      );
-
       return true;
     } catch (err) {
       console.warn('Supabase auto-seed skipped:', err);
@@ -121,49 +97,21 @@ export async function seedInitialDataIfNeeded(): Promise<boolean> {
   }
 
   try {
-    const semesterDoc = await getDoc(doc(db, 'semesterSettings', '2026-2'));
-    if (semesterDoc.exists()) {
+    const snap = await getDocs(collection(db, 'semesterSettings'));
+    if (!snap.empty) {
       return false; // Already seeded
     }
 
-    console.log('Seeding initial semester, classes, and students into Firestore...');
     const batch = writeBatch(db);
-
-    // 1. Create active semester
     batch.set(doc(db, 'semesterSettings', '2026-2'), {
       ...SAMPLE_SEMESTER,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-
-    // 2. Create sample classes
-    for (const cls of SAMPLE_CLASSES) {
-      const classRef = doc(collection(db, 'classSchedules'));
-      batch.set(classRef, {
-        ...cls,
-        id: classRef.id,
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    // 3. Create sample students
-    for (const student of SAMPLE_STUDENTS) {
-      const studentDocId = `2026-2_${student.studentId}`;
-      batch.set(doc(db, 'students', studentDocId), {
-        id: studentDocId,
-        semesterId: '2026-2',
-        studentId: student.studentId,
-        name: student.name,
-        active: true,
-        createdAt: serverTimestamp(),
-      });
-    }
-
     await batch.commit();
-    console.log('Initial sample dataset seeded successfully!');
     return true;
   } catch (err) {
-    console.warn('Auto-seed bypassed or permissions require login:', err);
+    console.warn('Auto-seed bypassed:', err);
     return false;
   }
 }

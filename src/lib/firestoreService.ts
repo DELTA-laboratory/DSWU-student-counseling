@@ -39,6 +39,8 @@ import {
   sbBookAppointmentAtomic,
   sbGetAdminAppointments,
   sbCancelAppointmentByAdmin,
+  sbUpdateAppointmentByAdmin,
+  sbDeleteAppointmentByAdmin,
 } from './supabaseService';
 import {
   SemesterSettings,
@@ -114,9 +116,12 @@ export async function getAllSemesters(): Promise<SemesterSettings[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as SemesterSettings));
 }
 
-export async function saveSemester(semester: SemesterSettings): Promise<void> {
+export async function saveSemester(
+  semester: SemesterSettings,
+  previousSemesterId?: string
+): Promise<void> {
   if (isSupabaseConfigured) {
-    return sbSaveSemester(semester);
+    return sbSaveSemester(semester, previousSemesterId);
   }
   const semesterRef = doc(db, 'semesterSettings', semester.id);
   // If active is true, deactivate all others atomically
@@ -883,5 +888,84 @@ export async function cancelAppointmentByAdmin(
     batch.delete(lockRef);
   }
 
+  await batch.commit();
+}
+
+export async function updateAppointmentByAdmin(
+  appointmentId: string,
+  updates: {
+    studentName: string;
+    studentId: string;
+    phone: string;
+    date: string;
+    startTime: string;
+    consultationType: 'in_person' | 'online';
+    status: 'confirmed' | 'canceled';
+  }
+): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbUpdateAppointmentByAdmin(appointmentId, updates);
+  }
+  const aptDoc = await getDoc(doc(db, 'appointments', appointmentId));
+  if (!aptDoc.exists()) return;
+  const oldApt = aptDoc.data() as Appointment;
+
+  const batch = writeBatch(db);
+  const oldSub = getAppointmentSubSlots(oldApt.startTime, 60);
+  for (const slot of oldSub.subSlots) {
+    batch.delete(doc(db, 'slotLocks', `${oldApt.date}_${slot}`));
+  }
+
+  const { subSlots: newSubSlots, endTime: newEndTime } = getAppointmentSubSlots(
+    updates.startTime,
+    60
+  );
+  batch.update(doc(db, 'appointments', appointmentId), {
+    studentName: updates.studentName.trim(),
+    studentId: updates.studentId.trim(),
+    phone: updates.phone.trim(),
+    date: updates.date,
+    startTime: updates.startTime,
+    endTime: newEndTime,
+    startAt: `${updates.date}T${updates.startTime}:00+09:00`,
+    endAt: `${updates.date}T${newEndTime}:00+09:00`,
+    consultationType: updates.consultationType,
+    status: updates.status,
+    updatedAt: serverTimestamp(),
+  });
+
+  if (updates.status === 'confirmed') {
+    for (const slot of newSubSlots) {
+      const lockId = `${updates.date}_${slot}`;
+      batch.set(doc(db, 'slotLocks', lockId), {
+        id: lockId,
+        slotKey: lockId,
+        date: updates.date,
+        time: slot,
+        type: 'appointment',
+        semesterId: oldApt.semesterId,
+        referenceId: appointmentId,
+        createdAt: serverTimestamp(),
+      });
+    }
+  }
+
+  await batch.commit();
+}
+
+export async function deleteAppointmentByAdmin(appointmentId: string): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbDeleteAppointmentByAdmin(appointmentId);
+  }
+  const aptDoc = await getDoc(doc(db, 'appointments', appointmentId));
+  const batch = writeBatch(db);
+  if (aptDoc.exists()) {
+    const apt = aptDoc.data() as Appointment;
+    const { subSlots } = getAppointmentSubSlots(apt.startTime, 60);
+    for (const slot of subSlots) {
+      batch.delete(doc(db, 'slotLocks', `${apt.date}_${slot}`));
+    }
+  }
+  batch.delete(doc(db, 'appointments', appointmentId));
   await batch.commit();
 }

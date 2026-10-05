@@ -49,6 +49,8 @@ import {
   updateStudent,
   deleteStudent,
   cancelAppointmentByAdmin,
+  updateAppointmentByAdmin,
+  deleteAppointmentByAdmin,
 } from '../lib/firestoreService';
 
 interface AdminDashboardProps {
@@ -94,6 +96,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     name: '',
     firstSemesterInPerson: true,
     active: true,
+  });
+  const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
+  const [editAppointmentForm, setEditAppointmentForm] = useState({
+    studentName: '',
+    studentId: '',
+    phone: '',
+    date: '',
+    startTime: '14:00',
+    consultationType: 'in_person' as 'in_person' | 'online',
+    status: 'confirmed' as 'confirmed' | 'canceled',
   });
   const [showSemesterEdit, setShowSemesterEdit] = useState(false);
 
@@ -449,12 +461,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
 
     try {
-      await saveSemester(newSem);
+      await saveSemester(newSem, semester?.id);
       setShowSemesterEdit(false);
-      showNotification('success', '학기 설정 및 구글폼 링크가 활성화·저장되었습니다.');
+      showNotification('success', '학기 설정 및 구글폼 링크가 Supabase에 저장되었습니다.');
       onRefresh();
     } catch {
       showNotification('error', '학기 설정 저장 실패');
+    }
+  };
+
+  const handleStartEditAppointment = (apt: Appointment) => {
+    setEditingAppointment(apt);
+    setEditAppointmentForm({
+      studentName: apt.studentName,
+      studentId: apt.studentId,
+      phone: apt.phone,
+      date: apt.date,
+      startTime: apt.startTime,
+      consultationType: apt.consultationType || 'in_person',
+      status: apt.status,
+    });
+  };
+
+  const handleSaveAppointmentEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAppointment) return;
+    try {
+      await updateAppointmentByAdmin(editingAppointment.appointmentId, editAppointmentForm);
+      setEditingAppointment(null);
+      showNotification('success', '상담 신청 내역이 수정되었습니다.');
+      onRefresh();
+    } catch {
+      showNotification('error', '상담 내역 수정 실패');
     }
   };
 
@@ -466,6 +504,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onRefresh();
     } catch {
       showNotification('error', '신청 취소 실패');
+    }
+  };
+
+  const handleDeleteAppointment = async (aptId: string) => {
+    if (!confirm('이 상담 내역을 데이터베이스에서 완전히 삭제하시겠습니까?')) return;
+    try {
+      await deleteAppointmentByAdmin(aptId);
+      showNotification('success', '상담 내역이 삭제되었습니다.');
+      onRefresh();
+    } catch {
+      showNotification('error', '상담 내역 삭제 실패');
     }
   };
 
@@ -768,6 +817,116 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
 
+              {/* Edit Appointment Form */}
+              {editingAppointment && (
+                <form
+                  onSubmit={handleSaveAppointmentEdit}
+                  className="p-4 bg-[#FDF2F6]/60 rounded-xl border border-[#F5C2D7] mb-6 space-y-3"
+                >
+                  <h3 className="text-xs font-bold text-[#B70050] uppercase">
+                    상담 신청 내역 수정 · {editingAppointment.studentName} ({editingAppointment.studentId})
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-6 gap-3 text-xs">
+                    <div>
+                      <label className="block text-neutral-600 mb-1">학생명</label>
+                      <input
+                        type="text"
+                        value={editAppointmentForm.studentName}
+                        onChange={(e) =>
+                          setEditAppointmentForm({ ...editAppointmentForm, studentName: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">학번</label>
+                      <input
+                        type="text"
+                        value={editAppointmentForm.studentId}
+                        onChange={(e) =>
+                          setEditAppointmentForm({ ...editAppointmentForm, studentId: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">상담 날짜</label>
+                      <input
+                        type="date"
+                        value={editAppointmentForm.date}
+                        onChange={(e) =>
+                          setEditAppointmentForm({ ...editAppointmentForm, date: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">시작 시간</label>
+                      <input
+                        type="time"
+                        step={1800}
+                        value={editAppointmentForm.startTime}
+                        onChange={(e) =>
+                          setEditAppointmentForm({ ...editAppointmentForm, startTime: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">상담 유형</label>
+                      <select
+                        value={editAppointmentForm.consultationType}
+                        onChange={(e) =>
+                          setEditAppointmentForm({
+                            ...editAppointmentForm,
+                            consultationType: e.target.value as 'in_person' | 'online',
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      >
+                        <option value="in_person">대면</option>
+                        <option value="online">비대면</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">상태</label>
+                      <select
+                        value={editAppointmentForm.status}
+                        onChange={(e) =>
+                          setEditAppointmentForm({
+                            ...editAppointmentForm,
+                            status: e.target.value as 'confirmed' | 'canceled',
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      >
+                        <option value="confirmed">확정</option>
+                        <option value="canceled">취소됨</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingAppointment(null)}
+                      className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer"
+                    >
+                      수정 저장
+                    </button>
+                  </div>
+                </form>
+              )}
+
               {filteredAppointments.length === 0 ? (
                 <div className="text-center py-12 text-neutral-400 text-sm">
                   해당 조건에 일치하는 상담 신청이 없습니다.
@@ -836,16 +995,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </div>
                             )}
                           </td>
-                          <td className="py-3 px-3 text-right">
+                          <td className="py-3 px-3 text-right space-x-1.5 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditAppointment(apt)}
+                              className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-[11px] font-medium transition-colors cursor-pointer"
+                            >
+                              수정
+                            </button>
                             {apt.status === 'confirmed' && (
                               <button
                                 type="button"
                                 onClick={() => handleCancelAppointment(apt.appointmentId)}
                                 className="px-2.5 py-1 rounded-lg bg-[#FDF2F6] hover:bg-[#B70050] hover:text-white text-[#B70050] text-[11px] font-semibold transition-colors cursor-pointer"
                               >
-                                취소하기
+                                취소
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAppointment(apt.appointmentId)}
+                              className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 text-[11px] font-semibold transition-colors cursor-pointer"
+                            >
+                              삭제
+                            </button>
                           </td>
                         </tr>
                       ))}

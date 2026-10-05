@@ -124,6 +124,23 @@ export default function App() {
     refreshData();
   }, [refreshData]);
 
+  // Align selectedDate and currentMonth when active semester date range changes
+  useEffect(() => {
+    if (!semester) return;
+    const { dateStr: todayStr } = getNowSeoul();
+    if (selectedDate < semester.startDate || selectedDate > semester.endDate) {
+      const targetDate =
+        todayStr >= semester.startDate && todayStr <= semester.endDate
+          ? todayStr
+          : semester.startDate;
+      setSelectedDate(targetDate);
+      const [y, m] = targetDate.split('-').map(Number);
+      if (y && m) {
+        setCurrentMonth(new Date(y, m - 1, 1));
+      }
+    }
+  }, [semester?.id, semester?.startDate, semester?.endDate]);
+
   // Load admin-only datasets when authenticated as admin
   useEffect(() => {
     if (!isAdmin || !semester) {
@@ -432,7 +449,9 @@ export default function App() {
           <div className="flex items-center flex-wrap gap-4 text-xs sm:text-sm text-neutral-600 shrink-0 border-t lg:border-t-0 lg:border-l border-neutral-100 pt-3 lg:pt-0 lg:pl-6">
             <div className="flex items-center gap-1.5 font-medium tabular-nums">
               <Clock className="w-4 h-4 text-[#B70050]" />
-              <span>상담가능 시간: 09:00 ~ 18:00</span>
+              <span>
+                상담가능 시간: {semester?.dayStart || '09:00'} ~ {semester?.dayEnd || '18:00'}
+              </span>
             </div>
             <div className="flex items-center gap-1.5 font-bold text-neutral-900">
               <CheckCircle2 className="w-4 h-4 text-[#B70050]" />
