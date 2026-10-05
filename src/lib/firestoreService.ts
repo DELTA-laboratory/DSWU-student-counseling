@@ -80,12 +80,24 @@ export async function getActiveSemester(): Promise<SemesterSettings | null> {
     const snap = await getDocs(q);
     if (!snap.empty) {
       const d = snap.docs[0];
-      return { id: d.id, ...d.data() } as SemesterSettings;
+      const data = d.data() as SemesterSettings;
+      const cachedUrl = localStorage.getItem(`ds_google_form_url_${d.id}`);
+      return {
+        ...data,
+        id: d.id,
+        googleFormUrl: data.googleFormUrl || cachedUrl || '',
+      };
     }
     // Fallback: try default ID doc
     const directDoc = await getDoc(doc(db, 'semesterSettings', DEFAULT_SEMESTER_ID));
     if (directDoc.exists()) {
-      return { id: directDoc.id, ...directDoc.data() } as SemesterSettings;
+      const data = directDoc.data() as SemesterSettings;
+      const cachedUrl = localStorage.getItem(`ds_google_form_url_${directDoc.id}`);
+      return {
+        ...data,
+        id: directDoc.id,
+        googleFormUrl: data.googleFormUrl || cachedUrl || '',
+      };
     }
     return null;
   } catch (err) {
@@ -133,14 +145,23 @@ export async function updateSemesterGoogleFormUrl(
   semesterId: string,
   googleFormUrl: string
 ): Promise<void> {
+  try {
+    localStorage.setItem(`ds_google_form_url_${semesterId}`, googleFormUrl.trim());
+  } catch {
+    // Ignore storage error
+  }
   if (isSupabaseConfigured) {
     return sbUpdateSemesterGoogleFormUrl(semesterId, googleFormUrl);
   }
   const semesterRef = doc(db, 'semesterSettings', semesterId);
-  await updateDoc(semesterRef, {
-    googleFormUrl: googleFormUrl.trim(),
-    updatedAt: serverTimestamp(),
-  });
+  await setDoc(
+    semesterRef,
+    {
+      googleFormUrl: googleFormUrl.trim(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 // ----------------------------------------------------
@@ -200,9 +221,6 @@ export async function deleteClassSchedule(scheduleId: string): Promise<void> {
 export async function getPersonalSchedules(semesterId: string): Promise<PersonalSchedule[]> {
   if (isSupabaseConfigured) {
     return sbGetPersonalSchedules(semesterId);
-  }
-  if (!auth.currentUser) {
-    return [];
   }
   try {
     const q = query(collection(db, 'personalSchedules'), where('semesterId', '==', semesterId));
@@ -377,9 +395,6 @@ export async function updatePersonalSchedule(
 export async function getStudents(semesterId: string): Promise<StudentRecord[]> {
   if (isSupabaseConfigured) {
     return sbGetStudents(semesterId);
-  }
-  if (!auth.currentUser) {
-    return [];
   }
   try {
     const q = query(collection(db, 'students'), where('semesterId', '==', semesterId));
@@ -830,9 +845,6 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
 export async function getAdminAppointments(semesterId: string): Promise<Appointment[]> {
   if (isSupabaseConfigured) {
     return sbGetAdminAppointments(semesterId);
-  }
-  if (!auth.currentUser) {
-    return [];
   }
   try {
     const q = query(collection(db, 'appointments'), where('semesterId', '==', semesterId));

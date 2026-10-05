@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS public.admin_users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 기존 테이블이 이미 생성되어 있었던 경우 누락된 컬럼을 안전하게 자동 추가
+ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS google_form_url TEXT DEFAULT '';
+ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS first_semester_in_person BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS consultation_type TEXT NOT NULL DEFAULT 'in_person';
+
 -- 8. 수업 일정 + 개인 일정 통합 조회 뷰 (all_schedules_view)
 CREATE OR REPLACE VIEW public.all_schedules_view AS
 SELECT

@@ -28,6 +28,12 @@ const DEFAULT_SEMESTER_ID = '2026-2';
 // ----------------------------------------------------
 
 function mapSemesterRow(row: any): SemesterSettings {
+  let cachedUrl = '';
+  try {
+    cachedUrl = localStorage.getItem(`ds_google_form_url_${row.id}`) || '';
+  } catch {
+    // Ignore
+  }
   return {
     id: row.id,
     year: Number(row.year),
@@ -40,7 +46,7 @@ function mapSemesterRow(row: any): SemesterSettings {
     dayEnd: row.day_end || '18:00',
     slotMinutes: Number(row.slot_minutes || 30),
     appointmentMinutes: Number(row.appointment_minutes || 60),
-    googleFormUrl: row.google_form_url || '',
+    googleFormUrl: row.google_form_url || cachedUrl || '',
     active: Boolean(row.active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -157,6 +163,12 @@ export async function sbGetAllSemesters(): Promise<SemesterSettings[]> {
 
 export async function sbSaveSemester(semester: SemesterSettings): Promise<void> {
   if (!supabase) return;
+  try {
+    localStorage.setItem(`ds_google_form_url_${semester.id}`, (semester.googleFormUrl || '').trim());
+  } catch {
+    // Ignore
+  }
+
   if (semester.active) {
     await supabase
       .from('semester_settings')
@@ -164,7 +176,7 @@ export async function sbSaveSemester(semester: SemesterSettings): Promise<void> 
       .neq('id', semester.id);
   }
 
-  const { error } = await supabase.from('semester_settings').upsert({
+  const payloadWithForm: Record<string, any> = {
     id: semester.id,
     year: semester.year,
     semester: semester.semester,
@@ -179,23 +191,42 @@ export async function sbSaveSemester(semester: SemesterSettings): Promise<void> 
     google_form_url: semester.googleFormUrl || '',
     active: semester.active,
     updated_at: new Date().toISOString(),
-  });
-  if (error) throw error;
+  };
+
+  const { error } = await supabase.from('semester_settings').upsert(payloadWithForm);
+  if (error) {
+    // Fallback if google_form_url or updated_at column was not added to existing Supabase table yet
+    const { google_form_url, updated_at, ...fallbackPayload } = payloadWithForm;
+    const { error: retryErr } = await supabase.from('semester_settings').upsert(fallbackPayload);
+    if (retryErr) throw retryErr;
+  }
 }
 
 export async function sbUpdateSemesterGoogleFormUrl(
   semesterId: string,
   googleFormUrl: string
 ): Promise<void> {
+  const cleanUrl = googleFormUrl.trim();
+  try {
+    localStorage.setItem(`ds_google_form_url_${semesterId}`, cleanUrl);
+  } catch {
+    // Ignore
+  }
   if (!supabase) return;
   const { error } = await supabase
     .from('semester_settings')
     .update({
-      google_form_url: googleFormUrl.trim(),
-      updated_at: new Date().toISOString(),
+      google_form_url: cleanUrl,
     })
     .eq('id', semesterId);
-  if (error) throw error;
+
+  if (error) {
+    // If column google_form_url does not exist yet in Supabase table, log warning instead of failing UI
+    console.warn('Supabase google_form_url update warning:', error.message);
+    if (!error.message?.includes('google_form_url') && !error.code?.includes('PGRST204') && !error.code?.includes('42703')) {
+      throw error;
+    }
+  }
 }
 
 // ----------------------------------------------------
