@@ -1,0 +1,6 @@
+{
+  "name": "지도학생 상담 예약 시스템",
+  "description": "대학교 교수의 학기별 수업·개인 일정 등록 및 지도학생 1:1 상담 예약·관리 플랫폼",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

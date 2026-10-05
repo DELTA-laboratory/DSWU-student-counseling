@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'sungwoopark1224@gmail.com' ||
+        exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid))
+      );
+    }
+
+    // semesterSettings: Anyone can read settings (needed for calendar range & status), only authenticated admin can write
+    match /semesterSettings/{semesterId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // classSchedules: Anyone can read (for availability calculation), authenticated admin can write
+    match /classSchedules/{scheduleId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // personalSchedules: Contains private professor notes/titles
+    // Only authenticated professor can read or write
+    match /personalSchedules/{scheduleId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // slotLocks: Represents 30-minute locked blocks (without student personal data)
+    // Anyone can read (needed for public slot availability calculation)
+    match /slotLocks/{lockId} {
+      allow read: if true;
+      allow create: if (
+        request.resource.data.keys().hasAll(['slotKey', 'date', 'time', 'type', 'semesterId', 'createdAt']) &&
+        (request.resource.data.type == 'appointment' || isAuthenticated())
+      );
+      allow update, delete: if isAuthenticated();
+    }
+
+    // students: Registered student list per semester
+    // Single-document lookup (get) is allowed so student ID can be verified during booking.
+    // Listing (list) and modification (write) are strictly restricted to authenticated faculty!
+    match /students/{studentDocId} {
+      allow get: if true;
+      allow list, write: if isAuthenticated();
+    }
+
+    // appointments: Contains private student details (name, studentId, phone)
+    // Only authenticated professor can read or list all appointments.
+    // Anyone can create a confirmed appointment with valid required fields.
+    // Only authenticated admin can update or delete/cancel appointments.
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated();
+      allow create: if (
+        request.resource.data.keys().hasAll(['appointmentId', 'semesterId', 'studentName', 'studentId', 'phone', 'startAt', 'endAt', 'status', 'createdAt', 'updatedAt']) &&
+        request.resource.data.status == 'confirmed' &&
+        request.resource.data.studentName is string &&
+        request.resource.data.studentName.size() >= 2 &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId.size() >= 4 &&
+        request.resource.data.phone is string
+      );
+      allow update, delete: if isAuthenticated();
+    }
+
+    // adminUsers: collection storing allowed admin UIDs/emails
+    match /adminUsers/{uid} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // test connection document
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

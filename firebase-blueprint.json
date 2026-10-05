@@ -1,0 +1,146 @@
+{
+  "entities": {
+    "SemesterSettings": {
+      "title": "SemesterSettings",
+      "description": "Semester schedule and time parameters for student advising",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "year": { "type": "number" },
+        "semester": { "type": "number" },
+        "title": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "timezone": { "type": "string" },
+        "dayStart": { "type": "string" },
+        "dayEnd": { "type": "string" },
+        "slotMinutes": { "type": "number" },
+        "appointmentMinutes": { "type": "number" },
+        "googleFormUrl": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "year", "semester", "title", "startDate", "endDate", "active"]
+    },
+    "ClassSchedule": {
+      "title": "ClassSchedule",
+      "description": "Weekly recurring lecture time slot",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "semesterId": { "type": "string" },
+        "title": { "type": "string" },
+        "weekday": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" }
+      },
+      "required": ["semesterId", "title", "weekday", "startTime", "endTime", "startDate", "endDate"]
+    },
+    "PersonalSchedule": {
+      "title": "PersonalSchedule",
+      "description": "Professor private calendar event or meeting",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "semesterId": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "required": ["semesterId", "title", "date", "startTime", "endTime"]
+    },
+    "SlotLock": {
+      "title": "SlotLock",
+      "description": "Atomic 30-minute block reservation lock without student PII",
+      "type": "object",
+      "properties": {
+        "slotKey": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "type": { "type": "string", "enum": ["appointment", "personal", "class"] },
+        "semesterId": { "type": "string" },
+        "appointmentId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["slotKey", "date", "time", "type", "semesterId"]
+    },
+    "StudentRecord": {
+      "title": "StudentRecord",
+      "description": "Registered eligible advisee for the semester",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "semesterId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "name": { "type": "string" },
+        "active": { "type": "boolean" },
+        "firstSemesterInPerson": { "type": "boolean" }
+      },
+      "required": ["id", "semesterId", "studentId", "active"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "1:1 Student advising appointment session",
+      "type": "object",
+      "properties": {
+        "appointmentId": { "type": "string" },
+        "semesterId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentId": { "type": "string" },
+        "phone": { "type": "string" },
+        "consultationType": { "type": "string", "enum": ["in_person", "online"] },
+        "date": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "status": { "type": "string", "enum": ["confirmed", "canceled", "completed"] },
+        "confirmationCode": { "type": "string" }
+      },
+      "required": ["appointmentId", "semesterId", "studentName", "studentId", "phone", "status"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Faculty administrator user profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    }
+  },
+  "firestore": {
+    "/semesterSettings/{semesterId}": {
+      "schema": "SemesterSettings",
+      "description": "Semester calendar configuration and status"
+    },
+    "/classSchedules/{scheduleId}": {
+      "schema": "ClassSchedule",
+      "description": "Weekly recurring lecture schedules"
+    },
+    "/personalSchedules/{scheduleId}": {
+      "schema": "PersonalSchedule",
+      "description": "Professor private calendar events"
+    },
+    "/slotLocks/{lockId}": {
+      "schema": "SlotLock",
+      "description": "Atomic 30-minute block locks"
+    },
+    "/students/{studentDocId}": {
+      "schema": "StudentRecord",
+      "description": "Eligible student directory for the semester"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Student advising appointments"
+    },
+    "/adminUsers/{uid}": {
+      "schema": "AdminUser",
+      "description": "Faculty administrators"
+    }
+  }
+}
