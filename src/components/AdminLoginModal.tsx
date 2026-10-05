@@ -1,17 +1,23 @@
 import React, { useState } from 'react';
-import { ShieldAlert, X, Mail, Lock } from 'lucide-react';
+import { ShieldAlert, X, Mail, Lock, KeyRound } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 
 interface AdminLoginModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onSuccess?: () => void;
 }
 
-export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClose }) => {
-  const { loginWithEmail } = useAuth();
+export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+}) => {
+  const { loginWithEmail, updateAdminCredentials } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [isSetupMode, setIsSetupMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,8 +28,15 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
     setLoading(true);
     setError(null);
     try {
-      await loginWithEmail(email, password);
+      if (isSetupMode) {
+        await updateAdminCredentials(email, password);
+      } else {
+        await loginWithEmail(email, password);
+      }
       onClose();
+      if (onSuccess) {
+        onSuccess();
+      }
     } catch (err: any) {
       console.error(err);
       setError(err?.message || '이메일 또는 비밀번호를 다시 확인해주세요.');
@@ -61,9 +74,13 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
           </button>
         </div>
 
-        <h3 className="text-lg font-bold text-neutral-900 mb-1">교수 / 관리자 인증</h3>
+        <h3 className="text-lg font-bold text-neutral-900 mb-1">
+          {isSetupMode ? '관리자 이메일 · 비밀번호 설정' : '교수 / 관리자 인증'}
+        </h3>
         <p className="text-xs sm:text-sm text-neutral-500 mb-5 leading-relaxed">
-          지도학생 명단, 학기 설정, 수업 및 개인 일정 관리를 위해 관리자 이메일과 비밀번호로 로그인해주세요.
+          {isSetupMode
+            ? '교수 관리자 포털 접속에 사용할 이메일과 비밀번호를 등록(또는 변경)하고 즉시 로그인합니다.'
+            : '지도학생 명단, 학기 설정, 수업 및 개인 일정 관리를 위해 관리자 이메일과 비밀번호로 로그인해주세요.'}
         </p>
 
         {error && (
@@ -105,7 +122,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-neutral-200 text-xs sm:text-sm focus:outline-none focus:border-[#B70050]"
                 required
-                autoComplete="current-password"
+                autoComplete={isSetupMode ? 'new-password' : 'current-password'}
               />
             </div>
           </div>
@@ -115,17 +132,37 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
             disabled={loading}
             className="w-full py-3 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-xl text-xs sm:text-sm transition-colors cursor-pointer disabled:opacity-50 mt-1"
           >
-            {loading ? '인증 중...' : '관리자 로그인'}
+            {loading
+              ? '처리 중...'
+              : isSetupMode
+              ? '이 계정으로 설정 저장 후 바로 접속'
+              : '관리자 로그인'}
           </button>
         </form>
 
-        <button
-          type="button"
-          onClick={onClose}
-          className="w-full mt-3 py-2 text-xs text-neutral-400 hover:text-neutral-700 cursor-pointer font-medium"
-        >
-          닫기
-        </button>
+        <div className="mt-4 pt-3 border-t border-neutral-100 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => {
+              setIsSetupMode(!isSetupMode);
+              setError(null);
+            }}
+            className="text-xs font-semibold text-[#B70050] hover:underline flex items-center gap-1 cursor-pointer"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>
+              {isSetupMode ? '기존 계정으로 로그인하기' : '관리자 이메일/비밀번호 설정·재설정'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="py-1 px-2 text-xs text-neutral-400 hover:text-neutral-700 cursor-pointer font-medium"
+          >
+            닫기
+          </button>
+        </div>
       </motion.div>
     </motion.div>
   );

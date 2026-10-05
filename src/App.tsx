@@ -318,7 +318,11 @@ export default function App() {
               학생 화면으로 돌아가기
             </button>
           </div>
-          <AdminLoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
+          <AdminLoginModal
+            isOpen={showLoginModal}
+            onClose={() => setShowLoginModal(false)}
+            onSuccess={() => setViewMode('admin')}
+          />
         </div>
       );
     }
@@ -332,7 +336,10 @@ export default function App() {
         personalSchedules={personalSchedules}
         students={students}
         onRefresh={refreshData}
-        onLogout={logout}
+        onLogout={async () => {
+          await logout();
+          setViewMode('student');
+        }}
         userEmail={user.email || undefined}
       />
     );
@@ -651,7 +658,11 @@ export default function App() {
       {/* Admin Login Modal with AnimatePresence */}
       <AnimatePresence>
         {showLoginModal && (
-          <AdminLoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
+          <AdminLoginModal
+            isOpen={showLoginModal}
+            onClose={() => setShowLoginModal(false)}
+            onSuccess={() => setViewMode('admin')}
+          />
         )}
       </AnimatePresence>
     </div>
