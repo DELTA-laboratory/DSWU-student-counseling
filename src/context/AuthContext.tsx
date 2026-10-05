@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut as fbSignOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, googleProvider, db } from '../lib/firebase';
+import { signInWithEmailAndPassword, signOut as fbSignOut } from 'firebase/auth';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../lib/firebase';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 export interface AuthUserProfile {
@@ -14,17 +14,17 @@ interface AuthContextType {
   user: AuthUserProfile | null;
   isAdmin: boolean;
   loading: boolean;
-  loginWithGoogle: () => Promise<void>;
   loginWithEmail: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   registerAsAdmin: (uid: string, email: string) => Promise<void>;
 }
 
+const LOCAL_ADMIN_STORAGE_KEY = 'ds_counseling_admin_session';
+
 const AuthContext = createContext<AuthContextType>({
   user: null,
   isAdmin: false,
   loading: true,
-  loginWithGoogle: async () => {},
   loginWithEmail: async () => {},
   logout: async () => {},
   registerAsAdmin: async () => {},
@@ -38,19 +38,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let sbSubscription: { unsubscribe: () => void } | null = null;
 
-    // 1. If Supabase is configured, also listen to Supabase Email/Password session
+    // 1. Check saved env-based admin session first
+    try {
+      const savedSession = localStorage.getItem(LOCAL_ADMIN_STORAGE_KEY);
+      if (savedSession) {
+        const parsed = JSON.parse(savedSession) as AuthUserProfile;
+        if (parsed?.email) {
+          setUser(parsed);
+          setIsAdmin(true);
+        }
+      }
+    } catch {
+      // Ignore storage error
+    }
+
+    // 2. Listen to Supabase Email/Password session
     if (isSupabaseConfigured && supabase) {
       supabase.auth.getSession().then(({ data: { session } }) => {
         if (session?.user) {
           const profile: AuthUserProfile = {
             uid: session.user.id,
             email: session.user.email || null,
-            displayName: session.user.user_metadata?.full_name || '교수',
+            displayName: session.user.user_metadata?.full_name || '박성우 교수',
           };
           setUser(profile);
           setIsAdmin(true);
-          setLoading(false);
         }
+        setLoading(false);
       });
 
       const { data } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -58,116 +72,113 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const profile: AuthUserProfile = {
             uid: session.user.id,
             email: session.user.email || null,
-            displayName: session.user.user_metadata?.full_name || '교수',
+            displayName: session.user.user_metadata?.full_name || '박성우 교수',
           };
           setUser(profile);
           setIsAdmin(true);
-          setLoading(false);
+        } else {
+          const savedSession = localStorage.getItem(LOCAL_ADMIN_STORAGE_KEY);
+          if (!savedSession) {
+            setUser(null);
+            setIsAdmin(false);
+          }
         }
+        setLoading(false);
       });
       sbSubscription = data.subscription;
+    } else {
+      setLoading(false);
     }
 
-    // 2. Listen to Google Popup Auth (works immediately without extra Supabase Google OAuth setup)
-    const unsubscribeFb = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
+    return () => {
+      if (sbSubscription) sbSubscription.unsubscribe();
+    };
+  }, []);
+
+  const loginWithEmail = async (email: string, password: string) => {
+    const cleanEmail = email.trim();
+    const envAdminEmail = (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.trim();
+    const envAdminPassword = (import.meta.env.VITE_ADMIN_PASSWORD as string | undefined)?.trim();
+
+    // 1. Check if VITE_ADMIN_EMAIL & VITE_ADMIN_PASSWORD are configured and match
+    if (envAdminEmail && envAdminPassword) {
+      if (cleanEmail.toLowerCase() === envAdminEmail.toLowerCase() && password === envAdminPassword) {
         const profile: AuthUserProfile = {
-          uid: currentUser.uid,
-          email: currentUser.email,
-          displayName: currentUser.displayName,
+          uid: 'admin-professor',
+          email: cleanEmail,
+          displayName: '박성우 교수',
         };
+        localStorage.setItem(LOCAL_ADMIN_STORAGE_KEY, JSON.stringify(profile));
         setUser(profile);
         setIsAdmin(true);
 
         if (isSupabaseConfigured && supabase) {
           try {
             await supabase.from('admin_users').upsert({
-              uid: currentUser.uid,
-              email: currentUser.email || '',
-              name: currentUser.displayName || '교수',
+              uid: profile.uid,
+              email: cleanEmail,
+              name: '박성우 교수',
               role: 'admin',
             });
-          } catch {
-            // Ignore non-fatal upsert error
-          }
-        } else {
-          try {
-            const adminDoc = await getDoc(doc(db, 'adminUsers', currentUser.uid));
-            if (!adminDoc.exists()) {
-              await setDoc(
-                doc(db, 'adminUsers', currentUser.uid),
-                {
-                  uid: currentUser.uid,
-                  email: currentUser.email || '',
-                  name: currentUser.displayName || '교수',
-                  role: 'admin',
-                  createdAt: serverTimestamp(),
-                },
-                { merge: true }
-              );
-            }
           } catch {
             // Ignore non-fatal error
           }
         }
-      } else {
-        // Only clear user if there is no active Supabase session either
-        if (isSupabaseConfigured && supabase) {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (!session?.user) {
-            setUser(null);
-            setIsAdmin(false);
-          }
-        } else {
-          setUser(null);
-          setIsAdmin(false);
-        }
+        return;
       }
-      setLoading(false);
-    });
+    }
 
-    return () => {
-      unsubscribeFb();
-      if (sbSubscription) sbSubscription.unsubscribe();
-    };
-  }, []);
+    // 2. Authenticate via Supabase Email/Password Auth
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
 
-  const loginWithGoogle = async () => {
-    // Use pre-configured Google Popup Auth so the user never hits
-    // Supabase's "Unsupported provider: provider is not enabled" error
-    try {
-      const cred = await signInWithPopup(auth, googleProvider);
-      if (cred.user && isSupabaseConfigured && supabase) {
+      if (error) {
+        throw new Error('이메일 또는 비밀번호가 올바르지 않습니다. 다시 확인해주세요.');
+      }
+
+      if (data.user) {
+        const profile: AuthUserProfile = {
+          uid: data.user.id,
+          email: data.user.email || cleanEmail,
+          displayName: data.user.user_metadata?.full_name || '박성우 교수',
+        };
+        setUser(profile);
+        setIsAdmin(true);
+
         try {
           await supabase.from('admin_users').upsert({
-            uid: cred.user.uid,
-            email: cred.user.email || '',
-            name: cred.user.displayName || '교수',
+            uid: data.user.id,
+            email: cleanEmail,
+            name: '박성우 교수',
             role: 'admin',
           });
         } catch {
-          // Ignore if table not created yet
+          // Ignore non-fatal error
         }
       }
-    } catch (err: any) {
-      console.error('Google login error:', err);
-      throw err;
-    }
-  };
-
-  const loginWithEmail = async (email: string, password: string) => {
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
-      if (error) throw error;
       return;
     }
-    throw new Error('이메일/비밀번호 로그인은 Supabase 환경변수 설정 시 활성화됩니다. Google 계정으로 로그인해주세요.');
+
+    // 3. Fallback: Firebase Email/Password Auth if Supabase is not configured
+    try {
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      const profile: AuthUserProfile = {
+        uid: cred.user.uid,
+        email: cred.user.email || cleanEmail,
+        displayName: cred.user.displayName || '박성우 교수',
+      };
+      setUser(profile);
+      setIsAdmin(true);
+    } catch {
+      throw new Error('이메일 또는 비밀번호가 올바르지 않습니다. 설정한 관리자 계정 정보를 확인해주세요.');
+    }
   };
 
   const logout = async () => {
+    localStorage.removeItem(LOCAL_ADMIN_STORAGE_KEY);
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.auth.signOut();
@@ -209,7 +220,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         isAdmin,
         loading,
-        loginWithGoogle,
         loginWithEmail,
         logout,
         registerAsAdmin,
