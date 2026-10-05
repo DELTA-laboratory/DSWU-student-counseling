@@ -14,6 +14,29 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
+import { isSupabaseConfigured } from './supabase';
+import {
+  sbGetActiveSemester,
+  sbGetAllSemesters,
+  sbSaveSemester,
+  sbUpdateSemesterGoogleFormUrl,
+  sbGetClassSchedules,
+  sbAddClassSchedule,
+  sbDeleteClassSchedule,
+  sbGetPersonalSchedules,
+  sbCheckPersonalScheduleConflicts,
+  sbSavePersonalScheduleWithAutoCancel,
+  sbDeletePersonalSchedule,
+  sbGetStudents,
+  sbAddStudentsBatch,
+  sbToggleStudentStatus,
+  sbToggleStudentFirstSemesterInPerson,
+  sbDeleteStudent,
+  sbIsStudentEligible,
+  sbBookAppointmentAtomic,
+  sbGetAdminAppointments,
+  sbCancelAppointmentByAdmin,
+} from './supabaseService';
 import {
   SemesterSettings,
   ClassSchedule,
@@ -46,6 +69,9 @@ const DEFAULT_SEMESTER_ID = '2026-2';
 // ----------------------------------------------------
 
 export async function getActiveSemester(): Promise<SemesterSettings | null> {
+  if (isSupabaseConfigured) {
+    return sbGetActiveSemester();
+  }
   try {
     const q = query(collection(db, 'semesterSettings'), where('active', '==', true));
     const snap = await getDocs(q);
@@ -66,11 +92,17 @@ export async function getActiveSemester(): Promise<SemesterSettings | null> {
 }
 
 export async function getAllSemesters(): Promise<SemesterSettings[]> {
+  if (isSupabaseConfigured) {
+    return sbGetAllSemesters();
+  }
   const snap = await getDocs(collection(db, 'semesterSettings'));
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as SemesterSettings));
 }
 
 export async function saveSemester(semester: SemesterSettings): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbSaveSemester(semester);
+  }
   const semesterRef = doc(db, 'semesterSettings', semester.id);
   // If active is true, deactivate all others atomically
   if (semester.active) {
@@ -98,6 +130,9 @@ export async function updateSemesterGoogleFormUrl(
   semesterId: string,
   googleFormUrl: string
 ): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbUpdateSemesterGoogleFormUrl(semesterId, googleFormUrl);
+  }
   const semesterRef = doc(db, 'semesterSettings', semesterId);
   await updateDoc(semesterRef, {
     googleFormUrl: googleFormUrl.trim(),
@@ -110,6 +145,9 @@ export async function updateSemesterGoogleFormUrl(
 // ----------------------------------------------------
 
 export async function getClassSchedules(semesterId: string): Promise<ClassSchedule[]> {
+  if (isSupabaseConfigured) {
+    return sbGetClassSchedules(semesterId);
+  }
   try {
     const q = query(collection(db, 'classSchedules'), where('semesterId', '==', semesterId));
     const snap = await getDocs(q);
@@ -121,6 +159,9 @@ export async function getClassSchedules(semesterId: string): Promise<ClassSchedu
 }
 
 export async function addClassSchedule(data: Omit<ClassSchedule, 'id' | 'createdAt'>): Promise<string> {
+  if (isSupabaseConfigured) {
+    return sbAddClassSchedule(data);
+  }
   const newRef = doc(collection(db, 'classSchedules'));
   await setDoc(newRef, {
     ...data,
@@ -131,6 +172,9 @@ export async function addClassSchedule(data: Omit<ClassSchedule, 'id' | 'created
 }
 
 export async function deleteClassSchedule(scheduleId: string): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbDeleteClassSchedule(scheduleId);
+  }
   await deleteDoc(doc(db, 'classSchedules', scheduleId));
 }
 
@@ -139,6 +183,9 @@ export async function deleteClassSchedule(scheduleId: string): Promise<void> {
 // ----------------------------------------------------
 
 export async function getPersonalSchedules(semesterId: string): Promise<PersonalSchedule[]> {
+  if (isSupabaseConfigured) {
+    return sbGetPersonalSchedules(semesterId);
+  }
   if (!auth.currentUser) {
     return [];
   }
@@ -162,6 +209,9 @@ export async function checkPersonalScheduleConflicts(
   endTime: string,
   semesterId: string
 ): Promise<Appointment[]> {
+  if (isSupabaseConfigured) {
+    return sbCheckPersonalScheduleConflicts(date, startTime, endTime, semesterId);
+  }
   const q = query(
     collection(db, 'appointments'),
     where('semesterId', '==', semesterId),
@@ -189,6 +239,9 @@ export async function savePersonalScheduleWithAutoCancel(
   personalData: Omit<PersonalSchedule, 'id' | 'createdAt'>,
   conflictAppointments: Appointment[]
 ): Promise<string> {
+  if (isSupabaseConfigured) {
+    return sbSavePersonalScheduleWithAutoCancel(personalData, conflictAppointments);
+  }
   const batch = writeBatch(db);
 
   // 1. Create personal schedule document
@@ -233,6 +286,9 @@ export async function savePersonalScheduleWithAutoCancel(
 }
 
 export async function deletePersonalSchedule(schedule: PersonalSchedule): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbDeletePersonalSchedule(schedule);
+  }
   const batch = writeBatch(db);
   batch.delete(doc(db, 'personalSchedules', schedule.id));
 
@@ -250,6 +306,9 @@ export async function deletePersonalSchedule(schedule: PersonalSchedule): Promis
 // ----------------------------------------------------
 
 export async function getStudents(semesterId: string): Promise<StudentRecord[]> {
+  if (isSupabaseConfigured) {
+    return sbGetStudents(semesterId);
+  }
   if (!auth.currentUser) {
     return [];
   }
@@ -267,6 +326,9 @@ export async function addStudentsBatch(
   semesterId: string,
   students: Array<{ studentId: string; name?: string; firstSemesterInPerson?: boolean }>
 ): Promise<number> {
+  if (isSupabaseConfigured) {
+    return sbAddStudentsBatch(semesterId, students);
+  }
   const batch = writeBatch(db);
   let count = 0;
   for (const s of students) {
@@ -290,6 +352,9 @@ export async function addStudentsBatch(
 }
 
 export async function toggleStudentStatus(docId: string, currentActive: boolean): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbToggleStudentStatus(docId, currentActive);
+  }
   await updateDoc(doc(db, 'students', docId), {
     active: !currentActive,
   });
@@ -299,12 +364,18 @@ export async function toggleStudentFirstSemesterInPerson(
   docId: string,
   currentStatus: boolean
 ): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbToggleStudentFirstSemesterInPerson(docId, currentStatus);
+  }
   await updateDoc(doc(db, 'students', docId), {
     firstSemesterInPerson: !currentStatus,
   });
 }
 
 export async function deleteStudent(docId: string): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbDeleteStudent(docId);
+  }
   await deleteDoc(doc(db, 'students', docId));
 }
 
@@ -313,6 +384,9 @@ export async function deleteStudent(docId: string): Promise<void> {
  * Used when booking appointment.
  */
 export async function isStudentEligible(semesterId: string, studentId: string): Promise<boolean> {
+  if (isSupabaseConfigured) {
+    return sbIsStudentEligible(semesterId, studentId);
+  }
   try {
     const cleanId = studentId.trim();
     const docId = `${semesterId}_${cleanId}`;
@@ -459,6 +533,9 @@ export interface BookingResult {
  * Guarantees race-condition prevention (CASE 8 requirement).
  */
 export async function bookAppointmentAtomic(req: BookingRequest): Promise<BookingResult> {
+  if (isSupabaseConfigured) {
+    return sbBookAppointmentAtomic(req);
+  }
   try {
     // A. Validate semester & date range
     const semesterDoc = await getDoc(doc(db, 'semesterSettings', req.semesterId));
@@ -668,6 +745,9 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
 // ----------------------------------------------------
 
 export async function getAdminAppointments(semesterId: string): Promise<Appointment[]> {
+  if (isSupabaseConfigured) {
+    return sbGetAdminAppointments(semesterId);
+  }
   if (!auth.currentUser) {
     return [];
   }
@@ -685,6 +765,9 @@ export async function cancelAppointmentByAdmin(
   appointmentId: string,
   reason: 'manual_admin_cancel' | 'professor_schedule_conflict' | 'class_schedule_change' = 'manual_admin_cancel'
 ): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbCancelAppointmentByAdmin(appointmentId, reason);
+  }
   const aptDoc = await getDoc(doc(db, 'appointments', appointmentId));
   if (!aptDoc.exists()) return;
   const apt = aptDoc.data() as Appointment;

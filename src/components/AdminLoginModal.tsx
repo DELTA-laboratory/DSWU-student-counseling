@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ShieldAlert, X } from 'lucide-react';
+import { ShieldAlert, X, Mail, Lock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
+import { isSupabaseConfigured } from '../lib/supabase';
 
 interface AdminLoginModalProps {
   isOpen: boolean;
@@ -9,11 +10,28 @@ interface AdminLoginModalProps {
 }
 
 export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClose }) => {
-  const { loginWithGoogle } = useAuth();
+  const { loginWithGoogle, loginWithEmail } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await loginWithEmail(email, password);
+      onClose();
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || '이메일 또는 비밀번호를 다시 확인해주세요.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -67,6 +85,56 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
           <div className="p-3 mb-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs leading-relaxed">
             {error}
           </div>
+        )}
+
+        {isSupabaseConfigured && (
+          <form onSubmit={handleEmailLogin} className="space-y-3 mb-4">
+            <div>
+              <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                교수 이메일 (Supabase Auth)
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-neutral-400 absolute left-3 top-2.5" />
+                <input
+                  type="email"
+                  placeholder="professor@university.ac.kr"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-neutral-200 text-xs sm:text-sm focus:outline-none focus:border-[#B70050]"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                비밀번호
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-neutral-400 absolute left-3 top-2.5" />
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-neutral-200 text-xs sm:text-sm focus:outline-none focus:border-[#B70050]"
+                  required
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-xl text-xs sm:text-sm transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {loading ? '인증 중...' : '이메일로 관리자 로그인'}
+            </button>
+
+            <div className="relative flex py-1 items-center">
+              <div className="grow border-t border-neutral-200" />
+              <span className="shrink mx-3 text-[11px] text-neutral-400">또는</span>
+              <div className="grow border-t border-neutral-200" />
+            </div>
+          </form>
         )}
 
         <button

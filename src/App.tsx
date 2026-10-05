@@ -7,6 +7,8 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from './lib/firebase';
+import { isSupabaseConfigured, supabase } from './lib/supabase';
+import { sbGetSlotLocks, sbGetAdminAppointments } from './lib/supabaseService';
 import {
   SemesterSettings,
   ClassSchedule,
@@ -158,6 +160,29 @@ export default function App() {
   useEffect(() => {
     if (!semester) return;
 
+    if (isSupabaseConfigured && supabase) {
+      sbGetSlotLocks(semester.id).then(setSlotLocks);
+      const channel = supabase
+        .channel(`slot_locks_${semester.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'slot_locks',
+            filter: `semester_id=eq.${semester.id}`,
+          },
+          () => {
+            sbGetSlotLocks(semester.id).then(setSlotLocks);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+
     const q = query(
       collection(db, 'slotLocks'),
       where('semesterId', '==', semester.id)
@@ -183,6 +208,29 @@ export default function App() {
   // 3. Real-time Listener for Appointments (if admin)
   useEffect(() => {
     if (!isAdmin || !semester) return;
+
+    if (isSupabaseConfigured && supabase) {
+      sbGetAdminAppointments(semester.id).then(setAdminAppointments);
+      const channel = supabase
+        .channel(`appointments_${semester.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'appointments',
+            filter: `semester_id=eq.${semester.id}`,
+          },
+          () => {
+            sbGetAdminAppointments(semester.id).then(setAdminAppointments);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
 
     const q = query(
       collection(db, 'appointments'),

@@ -1,5 +1,6 @@
 import { collection, doc, getDocs, writeBatch, serverTimestamp, getDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import { isSupabaseConfigured, supabase } from './supabase';
 import { SemesterSettings } from '../types';
 
 export const SAMPLE_SEMESTER: SemesterSettings = {
@@ -61,6 +62,64 @@ export const SAMPLE_STUDENTS = [
  * if not already initialized in the database.
  */
 export async function seedInitialDataIfNeeded(): Promise<boolean> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: existing } = await supabase
+        .from('semester_settings')
+        .select('id')
+        .eq('id', '2026-2')
+        .maybeSingle();
+
+      if (existing) {
+        return false;
+      }
+
+      await supabase.from('semester_settings').upsert({
+        id: SAMPLE_SEMESTER.id,
+        year: SAMPLE_SEMESTER.year,
+        semester: SAMPLE_SEMESTER.semester,
+        title: SAMPLE_SEMESTER.title,
+        start_date: SAMPLE_SEMESTER.startDate,
+        end_date: SAMPLE_SEMESTER.endDate,
+        timezone: SAMPLE_SEMESTER.timezone,
+        day_start: SAMPLE_SEMESTER.dayStart,
+        day_end: SAMPLE_SEMESTER.dayEnd,
+        slot_minutes: SAMPLE_SEMESTER.slotMinutes,
+        appointment_minutes: SAMPLE_SEMESTER.appointmentMinutes,
+        google_form_url: '',
+        active: true,
+      });
+
+      await supabase.from('class_schedules').insert(
+        SAMPLE_CLASSES.map((cls) => ({
+          semester_id: cls.semesterId,
+          title: cls.title,
+          weekday: cls.weekday,
+          start_time: cls.startTime,
+          end_time: cls.endTime,
+          start_date: cls.startDate,
+          end_date: cls.endDate,
+        }))
+      );
+
+      await supabase.from('students').upsert(
+        SAMPLE_STUDENTS.map((st) => ({
+          id: `2026-2_${st.studentId}`,
+          semester_id: '2026-2',
+          student_id: st.studentId,
+          name: st.name,
+          active: true,
+          first_semester_in_person: true,
+        }))
+      );
+
+      return true;
+    } catch (err) {
+      console.warn('Supabase auto-seed skipped:', err);
+      return false;
+    }
+  }
+
   try {
     const semesterDoc = await getDoc(doc(db, 'semesterSettings', '2026-2'));
     if (semesterDoc.exists()) {
