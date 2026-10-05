@@ -36,9 +36,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    let sbSubscription: { unsubscribe: () => void } | null = null;
+
+    // 1. If Supabase is configured, also listen to Supabase Email/Password session
     if (isSupabaseConfigured && supabase) {
-      // 1. Check initial Supabase session
-      supabase.auth.getSession().then(async ({ data: { session } }) => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
         if (session?.user) {
           const profile: AuthUserProfile = {
             uid: session.user.id,
@@ -47,99 +49,106 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
           setUser(profile);
           setIsAdmin(true);
+          setLoading(false);
+        }
+      });
+
+      const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) {
+          const profile: AuthUserProfile = {
+            uid: session.user.id,
+            email: session.user.email || null,
+            displayName: session.user.user_metadata?.full_name || '교수',
+          };
+          setUser(profile);
+          setIsAdmin(true);
+          setLoading(false);
+        }
+      });
+      sbSubscription = data.subscription;
+    }
+
+    // 2. Listen to Google Popup Auth (works immediately without extra Supabase Google OAuth setup)
+    const unsubscribeFb = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        const profile: AuthUserProfile = {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+        };
+        setUser(profile);
+        setIsAdmin(true);
+
+        if (isSupabaseConfigured && supabase) {
           try {
             await supabase.from('admin_users').upsert({
-              uid: session.user.id,
-              email: session.user.email || '',
-              name: profile.displayName || '교수',
+              uid: currentUser.uid,
+              email: currentUser.email || '',
+              name: currentUser.displayName || '교수',
               role: 'admin',
             });
           } catch {
             // Ignore non-fatal upsert error
           }
         } else {
-          setUser(null);
-          setIsAdmin(false);
+          try {
+            const adminDoc = await getDoc(doc(db, 'adminUsers', currentUser.uid));
+            if (!adminDoc.exists()) {
+              await setDoc(
+                doc(db, 'adminUsers', currentUser.uid),
+                {
+                  uid: currentUser.uid,
+                  email: currentUser.email || '',
+                  name: currentUser.displayName || '교수',
+                  role: 'admin',
+                  createdAt: serverTimestamp(),
+                },
+                { merge: true }
+              );
+            }
+          } catch {
+            // Ignore non-fatal error
+          }
         }
-        setLoading(false);
-      });
-
-      // 2. Listen for Supabase auth state changes
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange(async (_event, session) => {
-        if (session?.user) {
-          const profile: AuthUserProfile = {
-            uid: session.user.id,
-            email: session.user.email || null,
-            displayName: session.user.user_metadata?.full_name || '교수',
-          };
-          setUser(profile);
-          setIsAdmin(true);
+      } else {
+        // Only clear user if there is no active Supabase session either
+        if (isSupabaseConfigured && supabase) {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (!session?.user) {
+            setUser(null);
+            setIsAdmin(false);
+          }
         } else {
           setUser(null);
           setIsAdmin(false);
         }
-        setLoading(false);
-      });
-
-      return () => subscription.unsubscribe();
-    }
-
-    // Fallback: Firebase Auth
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        setUser({
-          uid: currentUser.uid,
-          email: currentUser.email,
-          displayName: currentUser.displayName,
-        });
-        try {
-          const adminDoc = await getDoc(doc(db, 'adminUsers', currentUser.uid));
-          if (adminDoc.exists()) {
-            setIsAdmin(true);
-          } else {
-            setIsAdmin(true);
-            await setDoc(
-              doc(db, 'adminUsers', currentUser.uid),
-              {
-                uid: currentUser.uid,
-                email: currentUser.email || '',
-                name: currentUser.displayName || '교수',
-                role: 'admin',
-                createdAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-        } catch (err) {
-          console.error('Failed to verify admin status:', err);
-          setIsAdmin(true);
-        }
-      } else {
-        setUser(null);
-        setIsAdmin(false);
       }
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeFb();
+      if (sbSubscription) sbSubscription.unsubscribe();
+    };
   }, []);
 
   const loginWithGoogle = async () => {
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-        },
-      });
-      if (error) throw error;
-      return;
-    }
-
+    // Use pre-configured Google Popup Auth so the user never hits
+    // Supabase's "Unsupported provider: provider is not enabled" error
     try {
-      await signInWithPopup(auth, googleProvider);
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (cred.user && isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from('admin_users').upsert({
+            uid: cred.user.uid,
+            email: cred.user.email || '',
+            name: cred.user.displayName || '교수',
+            role: 'admin',
+          });
+        } catch {
+          // Ignore if table not created yet
+        }
+      }
     } catch (err: any) {
       console.error('Google login error:', err);
       throw err;
@@ -155,17 +164,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (error) throw error;
       return;
     }
-    throw new Error('이메일/비밀번호 로그인은 Supabase 환경변수(VITE_SUPABASE_URL) 설정 시 활성화됩니다. Google 계정으로 로그인해주세요.');
+    throw new Error('이메일/비밀번호 로그인은 Supabase 환경변수 설정 시 활성화됩니다. Google 계정으로 로그인해주세요.');
   };
 
   const logout = async () => {
     if (isSupabaseConfigured && supabase) {
-      await supabase.auth.signOut();
-      setUser(null);
-      setIsAdmin(false);
-      return;
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // Ignore
+      }
     }
-    await fbSignOut(auth);
+    try {
+      await fbSignOut(auth);
+    } catch {
+      // Ignore
+    }
     setUser(null);
     setIsAdmin(false);
   };

@@ -22,6 +22,7 @@ import {
   FileText,
   ExternalLink,
   Link as LinkIcon,
+  Edit2,
 } from 'lucide-react';
 import {
   SemesterSettings,
@@ -36,13 +37,16 @@ import {
   saveSemester,
   updateSemesterGoogleFormUrl,
   addClassSchedule,
+  updateClassSchedule,
   deleteClassSchedule,
   checkPersonalScheduleConflicts,
   savePersonalScheduleWithAutoCancel,
+  updatePersonalSchedule,
   deletePersonalSchedule,
   addStudentsBatch,
   toggleStudentStatus,
   toggleStudentFirstSemesterInPerson,
+  updateStudent,
   deleteStudent,
   cancelAppointmentByAdmin,
 } from '../lib/firestoreService';
@@ -81,14 +85,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Modal / Form states
   const [showAddClass, setShowAddClass] = useState(false);
+  const [editingClassId, setEditingClassId] = useState<string | null>(null);
   const [showAddPersonal, setShowAddPersonal] = useState(false);
+  const [editingPersonalSchedule, setEditingPersonalSchedule] = useState<PersonalSchedule | null>(null);
   const [showAddStudents, setShowAddStudents] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<StudentRecord | null>(null);
+  const [editStudentForm, setEditStudentForm] = useState({
+    name: '',
+    firstSemesterInPerson: true,
+    active: true,
+  });
   const [showSemesterEdit, setShowSemesterEdit] = useState(false);
 
   // Conflict modal state for Personal Schedule (CASE 9 & 10)
   const [conflictModalData, setConflictModalData] = useState<{
     personalData: Omit<PersonalSchedule, 'id' | 'createdAt'>;
     conflicts: Appointment[];
+    editingTarget?: PersonalSchedule | null;
   } | null>(null);
 
   // New Class Form State
@@ -163,11 +176,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     e.preventDefault();
     if (!semester) return;
     try {
-      await addClassSchedule({
-        ...newClass,
-        semesterId: semester.id,
-      });
+      if (editingClassId) {
+        await updateClassSchedule(editingClassId, {
+          ...newClass,
+          semesterId: semester.id,
+        });
+        showNotification('success', '수업 일정이 성공적으로 수정되었습니다.');
+      } else {
+        await addClassSchedule({
+          ...newClass,
+          semesterId: semester.id,
+        });
+        showNotification('success', '수업 일정이 성공적으로 등록되었습니다.');
+      }
       setShowAddClass(false);
+      setEditingClassId(null);
       setNewClass({
         title: '',
         weekday: 'monday',
@@ -176,11 +199,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         startDate: semester.startDate,
         endDate: semester.endDate,
       });
-      showNotification('success', '수업 일정이 성공적으로 등록되었습니다.');
       onRefresh();
     } catch (err) {
-      showNotification('error', '수업 일정 등록 실패');
+      showNotification('error', '수업 일정 저장 실패');
     }
+  };
+
+  const handleStartEditClass = (cls: ClassSchedule) => {
+    setEditingClassId(cls.id);
+    setNewClass({
+      title: cls.title,
+      weekday: cls.weekday,
+      startTime: cls.startTime,
+      endTime: cls.endTime,
+      startDate: cls.startDate,
+      endDate: cls.endDate,
+    });
+    setShowAddClass(true);
   };
 
   const handleDeleteClass = async (id: string) => {
@@ -218,31 +253,61 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       if (conflicts.length > 0) {
         // Show conflict modal! (Requirement CASE 9 & 10)
-        setConflictModalData({ personalData, conflicts });
+        setConflictModalData({
+          personalData,
+          conflicts,
+          editingTarget: editingPersonalSchedule,
+        });
       } else {
-        // Direct save with no conflicts
-        await savePersonalScheduleWithAutoCancel(personalData, []);
+        if (editingPersonalSchedule) {
+          await updatePersonalSchedule(editingPersonalSchedule, personalData, []);
+          showNotification('success', '개인 일정이 수정되었습니다.');
+        } else {
+          await savePersonalScheduleWithAutoCancel(personalData, []);
+          showNotification('success', '개인 일정이 등록되었습니다.');
+        }
         setShowAddPersonal(false);
-        showNotification('success', '개인 일정이 등록되었습니다.');
+        setEditingPersonalSchedule(null);
         onRefresh();
       }
     } catch (err) {
-      showNotification('error', '개인 일정 등록 중 오류');
+      showNotification('error', '개인 일정 저장 중 오류');
     }
+  };
+
+  const handleStartEditPersonal = (sch: PersonalSchedule) => {
+    setEditingPersonalSchedule(sch);
+    setNewPersonal({
+      title: sch.title,
+      note: sch.note || '',
+      date: sch.date,
+      startTime: sch.startTime,
+      endTime: sch.endTime,
+    });
+    setShowAddPersonal(true);
   };
 
   const handleConfirmPersonalWithCancel = async () => {
     if (!conflictModalData) return;
     try {
-      await savePersonalScheduleWithAutoCancel(
-        conflictModalData.personalData,
-        conflictModalData.conflicts
-      );
+      if (conflictModalData.editingTarget) {
+        await updatePersonalSchedule(
+          conflictModalData.editingTarget,
+          conflictModalData.personalData,
+          conflictModalData.conflicts
+        );
+      } else {
+        await savePersonalScheduleWithAutoCancel(
+          conflictModalData.personalData,
+          conflictModalData.conflicts
+        );
+      }
       setConflictModalData(null);
       setShowAddPersonal(false);
+      setEditingPersonalSchedule(null);
       showNotification(
         'success',
-        `개인 일정이 등록되었으며 충돌 상담 ${conflictModalData.conflicts.length}건이 안전하게 취소 처리되었습니다.`
+        `개인 일정이 저장되었으며 충돌 상담 ${conflictModalData.conflicts.length}건이 안전하게 취소 처리되었습니다.`
       );
       onRefresh();
     } catch (err) {
@@ -312,6 +377,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onRefresh();
     } catch {
       showNotification('error', '상담 유형 자격 변경 실패');
+    }
+  };
+
+  const handleStartEditStudent = (st: StudentRecord) => {
+    setEditingStudent(st);
+    setEditStudentForm({
+      name: st.name || '',
+      firstSemesterInPerson: st.firstSemesterInPerson ?? true,
+      active: st.active,
+    });
+  };
+
+  const handleSaveStudentEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStudent) return;
+    try {
+      await updateStudent(editingStudent.id, editStudentForm);
+      setEditingStudent(null);
+      showNotification('success', '학생 정보가 수정되었습니다.');
+      onRefresh();
+    } catch {
+      showNotification('error', '학생 정보 수정 실패');
     }
   };
 
@@ -783,7 +870,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowAddClass(!showAddClass)}
+                  onClick={() => {
+                    setEditingClassId(null);
+                    setNewClass({
+                      title: '',
+                      weekday: 'monday',
+                      startTime: '10:30',
+                      endTime: '12:00',
+                      startDate: semester?.startDate || '2026-09-01',
+                      endDate: semester?.endDate || '2026-12-15',
+                    });
+                    setShowAddClass(!showAddClass);
+                  }}
                   className="px-3.5 py-2 bg-[#B70050] hover:bg-[#960041] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
@@ -791,10 +889,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
 
-              {/* Add Class Form */}
+              {/* Add / Edit Class Form */}
               {showAddClass && (
                 <form onSubmit={handleCreateClass} className="p-4 bg-[#FDF2F6]/60 rounded-xl border border-[#F5C2D7] mb-6 space-y-4">
-                  <h3 className="text-xs font-bold text-[#B70050] uppercase">새 수업 등록</h3>
+                  <h3 className="text-xs font-bold text-[#B70050] uppercase">
+                    {editingClassId ? '기존 수업 일정 수정' : '새 수업 등록'}
+                  </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                     <div>
                       <label className="block text-neutral-600 mb-1">과목명</label>
@@ -845,7 +945,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
-                      onClick={() => setShowAddClass(false)}
+                      onClick={() => {
+                        setShowAddClass(false);
+                        setEditingClassId(null);
+                      }}
                       className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
                     >
                       취소
@@ -854,7 +957,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       type="submit"
                       className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer"
                     >
-                      저장하기
+                      {editingClassId ? '수정 저장하기' : '저장하기'}
                     </button>
                   </div>
                 </form>
@@ -884,14 +987,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           적용: {cls.startDate} ~ {cls.endDate}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteClass(cls.id)}
-                        className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
-                        title="수업 삭제"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditClass(cls)}
+                          className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
+                          title="수업 수정"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteClass(cls.id)}
+                          className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
+                          title="수업 삭제"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -908,12 +1021,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div>
                   <h2 className="text-lg font-bold text-neutral-900">교수 개인 일정 관리</h2>
                   <p className="text-xs text-neutral-500">
-                    일정 제목과 메모는 학생에게 절대 노출되지 않으며, 등록 시 충돌하는 상담 신청은 자동으로 취소 및 차단됩니다.
+                    일정 제목과 메모는 학생에게 절대 노출되지 않으며, 등록·수정 시 충돌하는 상담 신청은 자동으로 취소 및 차단됩니다.
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowAddPersonal(!showAddPersonal)}
+                  onClick={() => {
+                    setEditingPersonalSchedule(null);
+                    setNewPersonal({
+                      title: '',
+                      note: '',
+                      date: getNowSeoul().dateStr,
+                      startTime: '14:00',
+                      endTime: '15:30',
+                    });
+                    setShowAddPersonal(!showAddPersonal);
+                  }}
                   className="px-3.5 py-2 bg-[#B70050] hover:bg-[#960041] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
@@ -921,10 +1044,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
 
-              {/* Add Personal Form */}
+              {/* Add / Edit Personal Form */}
               {showAddPersonal && (
                 <form onSubmit={handlePreCheckPersonal} className="p-4 bg-[#FDF2F6]/60 rounded-xl border border-[#F5C2D7] mb-6 space-y-4">
-                  <h3 className="text-xs font-bold text-[#B70050] uppercase">개인 일정 등록</h3>
+                  <h3 className="text-xs font-bold text-[#B70050] uppercase">
+                    {editingPersonalSchedule ? '기존 개인 일정 수정' : '개인 일정 등록'}
+                  </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                     <div>
                       <label className="block text-neutral-600 mb-1">날짜</label>
@@ -981,7 +1106,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
-                      onClick={() => setShowAddPersonal(false)}
+                      onClick={() => {
+                        setShowAddPersonal(false);
+                        setEditingPersonalSchedule(null);
+                      }}
                       className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
                     >
                       취소
@@ -990,7 +1118,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       type="submit"
                       className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer"
                     >
-                      확인 및 저장
+                      {editingPersonalSchedule ? '수정 내용 저장' : '확인 및 저장'}
                     </button>
                   </div>
                 </form>
@@ -1016,14 +1144,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                         {sch.note && <div className="text-[11px] text-neutral-400 mt-1">{sch.note}</div>}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleDeletePersonal(sch)}
-                        className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
-                        title="일정 삭제"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditPersonal(sch)}
+                          className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
+                          title="일정 수정"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePersonal(sch)}
+                          className="p-1.5 text-neutral-400 hover:text-[#B70050] rounded-lg hover:bg-[#FDF2F6] transition-colors cursor-pointer"
+                          title="일정 삭제"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1098,6 +1236,74 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </form>
               )}
 
+              {/* Edit Single Student Form */}
+              {editingStudent && (
+                <form onSubmit={handleSaveStudentEdit} className="p-4 bg-[#FDF2F6]/60 rounded-xl border border-[#F5C2D7] mb-6 space-y-3">
+                  <h3 className="text-xs font-bold text-[#B70050] uppercase">
+                    학생 정보 수정 · 학번 {editingStudent.studentId}
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <label className="block text-neutral-600 mb-1">이름</label>
+                      <input
+                        type="text"
+                        value={editStudentForm.name}
+                        onChange={(e) => setEditStudentForm({ ...editStudentForm, name: e.target.value })}
+                        placeholder="학생 이름"
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">1학기 대면 상담 이수 여부</label>
+                      <select
+                        value={editStudentForm.firstSemesterInPerson ? 'true' : 'false'}
+                        onChange={(e) =>
+                          setEditStudentForm({
+                            ...editStudentForm,
+                            firstSemesterInPerson: e.target.value === 'true',
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      >
+                        <option value="true">1학기 대면 완료 (2학기 비대면 가능)</option>
+                        <option value="false">최초 상담 (대면 필수)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">신청 활성 상태</label>
+                      <select
+                        value={editStudentForm.active ? 'true' : 'false'}
+                        onChange={(e) =>
+                          setEditStudentForm({
+                            ...editStudentForm,
+                            active: e.target.value === 'true',
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      >
+                        <option value="true">활성 (신청 가능)</option>
+                        <option value="false">비활성 (신청 제한)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingStudent(null)}
+                      className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer"
+                    >
+                      수정 저장
+                    </button>
+                  </div>
+                </form>
+              )}
+
               {/* Student table */}
               {filteredStudents.length === 0 ? (
                 <div className="text-center py-10 text-neutral-400 text-sm">
@@ -1145,7 +1351,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 {st.active ? '활성 (신청 가능)' : '비활성'}
                               </span>
                             </td>
-                            <td className="py-3 px-3 text-right space-x-2">
+                            <td className="py-3 px-3 text-right space-x-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleStartEditStudent(st)}
+                                className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-[11px] font-medium cursor-pointer"
+                              >
+                                수정
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => handleToggleStudent(st.id, st.active)}

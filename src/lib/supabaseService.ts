@@ -233,6 +233,25 @@ export async function sbAddClassSchedule(
   return inserted.id;
 }
 
+export async function sbUpdateClassSchedule(
+  scheduleId: string,
+  data: Omit<ClassSchedule, 'id' | 'createdAt'>
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured');
+  const { error } = await supabase
+    .from('class_schedules')
+    .update({
+      title: data.title,
+      weekday: data.weekday,
+      start_time: data.startTime,
+      end_time: data.endTime,
+      start_date: data.startDate,
+      end_date: data.endDate,
+    })
+    .eq('id', scheduleId);
+  if (error) throw error;
+}
+
 export async function sbDeleteClassSchedule(scheduleId: string): Promise<void> {
   if (!supabase) return;
   const { error } = await supabase.from('class_schedules').delete().eq('id', scheduleId);
@@ -348,6 +367,66 @@ export async function sbDeletePersonalSchedule(schedule: PersonalSchedule): Prom
   }
 }
 
+export async function sbUpdatePersonalSchedule(
+  oldSchedule: PersonalSchedule,
+  updatedData: Omit<PersonalSchedule, 'id' | 'createdAt'>,
+  conflictAppointments: Appointment[] = []
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured');
+
+  // 1. Remove old slot locks
+  const oldSlots = generate30MinSlots(oldSchedule.startTime, oldSchedule.endTime);
+  const oldLockIds = oldSlots.map((slotTime) => `${oldSchedule.date}_${slotTime}`);
+  if (oldLockIds.length > 0) {
+    await supabase.from('slot_locks').delete().in('id', oldLockIds);
+  }
+
+  // 2. Update personal_schedules row
+  const { error: updErr } = await supabase
+    .from('personal_schedules')
+    .update({
+      title: updatedData.title,
+      note: updatedData.note || '',
+      date: updatedData.date,
+      start_time: updatedData.startTime,
+      end_time: updatedData.endTime,
+    })
+    .eq('id', oldSchedule.id);
+  if (updErr) throw updErr;
+
+  // 3. Create new slot locks
+  const newSlots = generate30MinSlots(updatedData.startTime, updatedData.endTime);
+  const lockRows = newSlots.map((slotTime) => {
+    const lockId = `${updatedData.date}_${slotTime}`;
+    return {
+      id: lockId,
+      slot_key: lockId,
+      date: updatedData.date,
+      time: slotTime,
+      type: 'personal',
+      semester_id: updatedData.semesterId,
+      reference_id: oldSchedule.id,
+    };
+  });
+  if (lockRows.length > 0) {
+    await supabase.from('slot_locks').upsert(lockRows);
+  }
+
+  // 4. Cancel conflicting appointments if any
+  for (const apt of conflictAppointments) {
+    await supabase
+      .from('appointments')
+      .update({
+        status: 'canceled',
+        canceled_at: new Date().toISOString(),
+        cancellation_reason: 'professor_schedule_conflict',
+        canceled_by: 'admin',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('appointment_id', apt.appointmentId);
+  }
+}
+
 // ----------------------------------------------------
 // 4. Students Directory (Supabase)
 // ----------------------------------------------------
@@ -405,6 +484,22 @@ export async function sbToggleStudentFirstSemesterInPerson(
   const { error } = await supabase
     .from('students')
     .update({ first_semester_in_person: !currentStatus })
+    .eq('id', docId);
+  if (error) throw error;
+}
+
+export async function sbUpdateStudent(
+  docId: string,
+  updates: { name: string; firstSemesterInPerson: boolean; active: boolean }
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase
+    .from('students')
+    .update({
+      name: updates.name.trim(),
+      first_semester_in_person: updates.firstSemesterInPerson,
+      active: updates.active,
+    })
     .eq('id', docId);
   if (error) throw error;
 }

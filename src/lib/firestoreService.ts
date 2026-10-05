@@ -22,15 +22,18 @@ import {
   sbUpdateSemesterGoogleFormUrl,
   sbGetClassSchedules,
   sbAddClassSchedule,
+  sbUpdateClassSchedule,
   sbDeleteClassSchedule,
   sbGetPersonalSchedules,
   sbCheckPersonalScheduleConflicts,
   sbSavePersonalScheduleWithAutoCancel,
+  sbUpdatePersonalSchedule,
   sbDeletePersonalSchedule,
   sbGetStudents,
   sbAddStudentsBatch,
   sbToggleStudentStatus,
   sbToggleStudentFirstSemesterInPerson,
+  sbUpdateStudent,
   sbDeleteStudent,
   sbIsStudentEligible,
   sbBookAppointmentAtomic,
@@ -171,6 +174,18 @@ export async function addClassSchedule(data: Omit<ClassSchedule, 'id' | 'created
   return newRef.id;
 }
 
+export async function updateClassSchedule(
+  scheduleId: string,
+  data: Omit<ClassSchedule, 'id' | 'createdAt'>
+): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbUpdateClassSchedule(scheduleId, data);
+  }
+  await updateDoc(doc(db, 'classSchedules', scheduleId), {
+    ...data,
+  });
+}
+
 export async function deleteClassSchedule(scheduleId: string): Promise<void> {
   if (isSupabaseConfigured) {
     return sbDeleteClassSchedule(scheduleId);
@@ -301,6 +316,60 @@ export async function deletePersonalSchedule(schedule: PersonalSchedule): Promis
   await batch.commit();
 }
 
+export async function updatePersonalSchedule(
+  oldSchedule: PersonalSchedule,
+  updatedData: Omit<PersonalSchedule, 'id' | 'createdAt'>,
+  conflictAppointments: Appointment[] = []
+): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbUpdatePersonalSchedule(oldSchedule, updatedData, conflictAppointments);
+  }
+  const batch = writeBatch(db);
+
+  // 1. Remove old slot locks
+  const oldSlots = generate30MinSlots(oldSchedule.startTime, oldSchedule.endTime);
+  for (const slotTime of oldSlots) {
+    const lockId = `${oldSchedule.date}_${slotTime}`;
+    batch.delete(doc(db, 'slotLocks', lockId));
+  }
+
+  // 2. Update personalSchedule document
+  const personalRef = doc(db, 'personalSchedules', oldSchedule.id);
+  batch.update(personalRef, {
+    ...updatedData,
+  });
+
+  // 3. Create new slot locks
+  const newSlots = generate30MinSlots(updatedData.startTime, updatedData.endTime);
+  for (const slotTime of newSlots) {
+    const lockId = `${updatedData.date}_${slotTime}`;
+    const lockRef = doc(db, 'slotLocks', lockId);
+    batch.set(lockRef, {
+      slotKey: lockId,
+      date: updatedData.date,
+      time: slotTime,
+      type: 'personal',
+      semesterId: updatedData.semesterId,
+      referenceId: oldSchedule.id,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  // 4. Cancel conflicting appointments if any
+  for (const apt of conflictAppointments) {
+    const aptRef = doc(db, 'appointments', apt.appointmentId);
+    batch.update(aptRef, {
+      status: 'canceled',
+      canceledAt: serverTimestamp(),
+      cancellationReason: 'professor_schedule_conflict',
+      canceledBy: 'admin',
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+}
+
 // ----------------------------------------------------
 // 4. Students Directory (지도학생 명단)
 // ----------------------------------------------------
@@ -369,6 +438,20 @@ export async function toggleStudentFirstSemesterInPerson(
   }
   await updateDoc(doc(db, 'students', docId), {
     firstSemesterInPerson: !currentStatus,
+  });
+}
+
+export async function updateStudent(
+  docId: string,
+  updates: { name: string; firstSemesterInPerson: boolean; active: boolean }
+): Promise<void> {
+  if (isSupabaseConfigured) {
+    return sbUpdateStudent(docId, updates);
+  }
+  await updateDoc(doc(db, 'students', docId), {
+    name: updates.name.trim(),
+    firstSemesterInPerson: updates.firstSemesterInPerson,
+    active: updates.active,
   });
 }
 
