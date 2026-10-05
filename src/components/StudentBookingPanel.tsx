@@ -445,14 +445,14 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                 <div className="flex items-start gap-2">
                   <AlertCircle className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
                   <p>
-                    <strong className="font-bold text-neutral-900">상담 유형 선택 주의사항:</strong> 올해(1학기) 대면으로 상담을 진행한 학생은 비대면으로 신청 가능하지만, <strong className="font-bold text-[#B70050]">처음으로 상담을 진행하는 학생은 반드시 대면을 선택</strong>해야 합니다.
+                    <strong className="font-bold text-neutral-900">지도교수 변경 학생 주의사항:</strong> 1학기에 박성우 교수가 아닌 다른 교수님께 지도교수 배정을 받고 <strong className="font-bold text-[#B70050]">2학기에 박성우 교수가 지도교수로 배정된 학생은 반드시 대면으로 진행</strong>해야 합니다.
                     {isFirstSemester && ' (1학기 정기 상담은 모두 대면으로 진행됩니다.)'}
                   </p>
                 </div>
                 <div className="flex items-start gap-2">
                   <FileText className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
                   <p>
-                    <strong className="font-bold text-neutral-900">비대면 신청 시 구글폼 작성 필수:</strong> 비대면으로 신청한 학생들은 반드시 <strong className="font-bold text-[#B70050]">구글폼(Google Form)을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
+                    <strong className="font-bold text-neutral-900">비대면 신청 시 유의사항:</strong> 비대면 신청자도 <strong className="font-bold text-[#B70050]">반드시 상담 날짜와 시간을 하나 신청</strong>해야 하며, <strong className="font-bold text-[#B70050]">구글폼을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
                   </p>
                 </div>
               </div>

@@ -428,7 +428,7 @@ export default function App() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
-          className="mb-8 p-5 sm:p-6 rounded-2xl bg-white border border-neutral-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative overflow-hidden"
+          className="mb-5 p-5 sm:p-6 rounded-2xl bg-white border border-neutral-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative overflow-hidden"
         >
           <div className="absolute top-0 left-0 right-0 h-1 bg-[#B70050]" />
           <div className="flex items-start gap-3.5">
@@ -457,6 +457,58 @@ export default function App() {
               <CheckCircle2 className="w-4 h-4 text-[#B70050]" />
               <span>30~60분 상담</span>
             </div>
+          </div>
+        </motion.div>
+
+        {/* Highlighted Policy Banner for In-Person / Online & Google Form (Positioned between 1:1 Info and Booking Section) */}
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.05 }}
+          className="mb-8 bg-[#FDF2F6]/70 border border-[#F5C2D7] rounded-2xl p-5 sm:p-6 relative overflow-hidden"
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="space-y-2">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#B70050] text-white text-xs font-bold">
+                <AlertCircle className="w-3.5 h-3.5" />
+                <span>필독 유의사항 · 대면 및 비대면 상담 운영 안내</span>
+              </div>
+              <h4 className="text-base sm:text-lg font-bold text-neutral-900">
+                학기별 상담 유형(대면·비대면) 선택 기준 및 사전 구글폼 작성 안내
+              </h4>
+              <ul className="space-y-1.5 text-xs sm:text-sm text-neutral-700 leading-relaxed list-disc list-inside">
+                <li>
+                  <strong className="font-bold text-neutral-900">학기별 운영 원칙:</strong> 1학기 정기 상담은 <strong className="font-bold text-[#B70050]">전원 대면 상담</strong>으로 진행하며, 2학기에는 <strong className="font-bold text-[#B70050]">1학기에 대면으로 상담을 진행한 학생에 한하여 비대면 상담 신청이 가능</strong>합니다.
+                </li>
+                <li>
+                  <strong className="font-bold text-neutral-900">지도교수 변경 학생 주의사항:</strong> 1학기에 박성우 교수가 아닌 다른 교수님께 지도교수 배정을 받고 <strong className="font-bold text-[#B70050]">2학기에 박성우 교수가 지도교수로 배정된 학생은 반드시 대면으로 진행</strong>해야 합니다.
+                </li>
+                <li>
+                  <strong className="font-bold text-neutral-900">비대면 신청자 구글폼 작성 필수:</strong> 비대면으로 신청한 학생들은 원활한 상담 진행을 위해 <strong className="font-bold text-[#B70050]">반드시 구글폼(Google Form)을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
+                </li>
+                <li>
+                  <strong className="font-bold text-neutral-900">비대면 신청자 일정 선택 필수:</strong> 비대면 상담을 신청하는 학생들도 <strong className="font-bold text-[#B70050]">반드시 상담 날짜와 시간을 하나 선택하여 신청</strong>해주기 바랍니다.
+                </li>
+              </ul>
+            </div>
+
+            {semester?.googleFormUrl && (
+              <div className="shrink-0 flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-[#F5C2D7]">
+                <a
+                  href={semester.googleFormUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-3 bg-[#B70050] hover:bg-[#960041] text-white text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-xs whitespace-nowrap"
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>비대면 상담 구글폼 작성하기</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <span className="text-[11px] text-[#B70050] font-medium text-center lg:text-right">
+                  ※ 비대면 상담 신청 시 상담 전 필수 제출
+                </span>
+              </div>
+            )}
           </div>
         </motion.div>
 
@@ -529,56 +581,6 @@ export default function App() {
                 step="NOTICE"
                 className="mt-14 mb-6"
               />
-
-              {/* Highlighted Policy Banner for In-Person / Online & Google Form */}
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.35 }}
-                className="mb-6 bg-[#FDF2F6]/70 border border-[#F5C2D7] rounded-2xl p-5 sm:p-6 relative overflow-hidden"
-              >
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#B70050] text-white text-xs font-bold">
-                      <AlertCircle className="w-3.5 h-3.5" />
-                      <span>필독 유의사항 · 대면 및 비대면 상담 운영 안내</span>
-                    </div>
-                    <h4 className="text-base sm:text-lg font-bold text-neutral-900">
-                      학기별 상담 유형(대면·비대면) 선택 기준 및 사전 구글폼 작성 안내
-                    </h4>
-                    <ul className="space-y-1.5 text-xs sm:text-sm text-neutral-700 leading-relaxed list-disc list-inside">
-                      <li>
-                        <strong className="font-bold text-neutral-900">학기별 운영 원칙:</strong> 1학기 정기 상담은 <strong className="font-bold text-[#B70050]">전원 대면 상담</strong>으로 진행하며, 2학기에는 <strong className="font-bold text-[#B70050]">1학기에 대면으로 상담을 진행한 학생에 한하여 비대면 상담 신청이 가능</strong>합니다.
-                      </li>
-                      <li>
-                        <strong className="font-bold text-neutral-900">최초 상담 학생 주의사항:</strong> 올해 대면으로 상담을 진행한 학생은 비대면으로 신청 가능하지만, <strong className="font-bold text-[#B70050]">처음으로 상담을 진행하는 학생은 반드시 대면을 선택</strong>해야 합니다.
-                      </li>
-                      <li>
-                        <strong className="font-bold text-neutral-900">비대면 신청자 구글폼 작성 필수:</strong> 비대면으로 신청한 학생들은 원활한 상담 진행을 위해 <strong className="font-bold text-[#B70050]">반드시 구글폼(Google Form)을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
-                      </li>
-                    </ul>
-                  </div>
-
-                  {semester.googleFormUrl && (
-                    <div className="shrink-0 flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-[#F5C2D7]">
-                      <a
-                        href={semester.googleFormUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-4 py-3 bg-[#B70050] hover:bg-[#960041] text-white text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-xs whitespace-nowrap"
-                      >
-                        <FileText className="w-4 h-4" />
-                        <span>비대면 상담 구글폼 작성하기</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                      <span className="text-[11px] text-[#B70050] font-medium text-center lg:text-right">
-                        ※ 비대면 상담 신청 시 상담 전 필수 제출
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </motion.div>
 
               {/* 4 Info / Guidance Cards with smooth scroll entry */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
