@@ -109,6 +109,31 @@ ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTA
 ALTER TABLE public.students ADD COLUMN IF NOT EXISTS first_semester_in_person BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS consultation_type TEXT NOT NULL DEFAULT 'in_person';
 
+-- 다중 교수 지원을 위한 교수 식별 정보 컬럼 추가 (기본값: 박성우 교수)
+ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.semester_settings ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
+ALTER TABLE public.class_schedules ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.class_schedules ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.class_schedules ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
+ALTER TABLE public.personal_schedules ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.personal_schedules ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.personal_schedules ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
+ALTER TABLE public.slot_locks ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.slot_locks ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.slot_locks ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.students ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
+ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS professor_name TEXT NOT NULL DEFAULT '박성우 교수';
+ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS professor_email TEXT NOT NULL DEFAULT 'sungwoopark1224@gmail.com';
+ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS professor_uid TEXT NOT NULL DEFAULT 'admin-professor';
+
 -- 8. 수업 일정 + 개인 일정 통합 조회 뷰 (all_schedules_view)
 CREATE OR REPLACE VIEW public.all_schedules_view AS
 SELECT

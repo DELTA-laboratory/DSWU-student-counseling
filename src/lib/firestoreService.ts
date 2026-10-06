@@ -20,6 +20,9 @@ import {
   sbGetAllSemesters,
   sbSaveSemester,
   sbUpdateSemesterGoogleFormUrl,
+  sbGetProfessorConsultationSettingsMap,
+  sbSaveProfessorConsultationSettings,
+  resolveProfessorConsultationSettings,
   sbGetClassSchedules,
   sbAddClassSchedule,
   sbUpdateClassSchedule,
@@ -36,11 +39,13 @@ import {
   sbUpdateStudent,
   sbDeleteStudent,
   sbIsStudentEligible,
+  sbGetSlotLocks,
   sbBookAppointmentAtomic,
   sbGetAdminAppointments,
   sbCancelAppointmentByAdmin,
   sbUpdateAppointmentByAdmin,
   sbDeleteAppointmentByAdmin,
+  getCurrentProfessorAttribution,
 } from './supabaseService';
 import {
   SemesterSettings,
@@ -51,6 +56,8 @@ import {
   StudentRecord,
   TimeSlotOption,
   ConsultationType,
+  ProfessorAttribution,
+  ProfessorConsultationSettings,
 } from '../types';
 import {
   generateEligibleAppointmentStarts,
@@ -169,6 +176,21 @@ export async function updateSemesterGoogleFormUrl(
   );
 }
 
+export { resolveProfessorConsultationSettings };
+
+export async function getProfessorConsultationSettingsMap(
+  fallbackAdminFormUrl = ''
+): Promise<Record<string, ProfessorConsultationSettings>> {
+  return sbGetProfessorConsultationSettingsMap(fallbackAdminFormUrl);
+}
+
+export async function saveProfessorConsultationSettings(
+  settings: ProfessorConsultationSettings,
+  semesterId?: string
+): Promise<void> {
+  return sbSaveProfessorConsultationSettings(settings, semesterId);
+}
+
 // ----------------------------------------------------
 // 2. Class Schedules (수업 일정)
 // ----------------------------------------------------
@@ -245,11 +267,13 @@ export async function checkPersonalScheduleConflicts(
   date: string,
   startTime: string,
   endTime: string,
-  semesterId: string
+  semesterId: string,
+  profOverride?: ProfessorAttribution
 ): Promise<Appointment[]> {
   if (isSupabaseConfigured) {
-    return sbCheckPersonalScheduleConflicts(date, startTime, endTime, semesterId);
+    return sbCheckPersonalScheduleConflicts(date, startTime, endTime, semesterId, profOverride);
   }
+  const prof = getCurrentProfessorAttribution(profOverride);
   const q = query(
     collection(db, 'appointments'),
     where('semesterId', '==', semesterId),
@@ -261,7 +285,11 @@ export async function checkPersonalScheduleConflicts(
 
   snap.docs.forEach((d) => {
     const apt = d.data() as Appointment;
-    if (hasTimeOverlap(apt.startTime, apt.endTime, startTime, endTime)) {
+    const recEmail = (apt.professorEmail || 'sungwoopark1224@gmail.com').toLowerCase();
+    const recUid = apt.professorUid || 'admin-professor';
+    const sameProfessor =
+      recEmail === prof.professorEmail.toLowerCase() || recUid === prof.professorUid;
+    if (sameProfessor && hasTimeOverlap(apt.startTime, apt.endTime, startTime, endTime)) {
       conflicts.push({ ...apt, appointmentId: d.id });
     }
   });
@@ -282,10 +310,16 @@ export async function savePersonalScheduleWithAutoCancel(
   }
   const batch = writeBatch(db);
 
+  const prof = getCurrentProfessorAttribution(personalData);
+  const lockPrefix = prof.professorUid === 'admin-professor' ? '' : `${prof.professorUid}_`;
+
   // 1. Create personal schedule document
   const personalRef = doc(collection(db, 'personalSchedules'));
   batch.set(personalRef, {
     ...personalData,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     id: personalRef.id,
     createdAt: serverTimestamp(),
   });
@@ -293,15 +327,19 @@ export async function savePersonalScheduleWithAutoCancel(
   // 2. Lock the 30-min slots for this personal schedule
   const slots = generate30MinSlots(personalData.startTime, personalData.endTime);
   for (const slotTime of slots) {
-    const lockId = `${personalData.date}_${slotTime}`;
+    const lockId = `${lockPrefix}${personalData.date}_${slotTime}`;
     const lockRef = doc(db, 'slotLocks', lockId);
     batch.set(lockRef, {
+      id: lockId,
       slotKey: lockId,
       date: personalData.date,
       time: slotTime,
       type: 'personal',
       semesterId: personalData.semesterId,
       referenceId: personalRef.id,
+      professorUid: prof.professorUid,
+      professorName: prof.professorName,
+      professorEmail: prof.professorEmail,
       createdAt: serverTimestamp(),
     });
   }
@@ -330,11 +368,12 @@ export async function deletePersonalSchedule(schedule: PersonalSchedule): Promis
   const batch = writeBatch(db);
   batch.delete(doc(db, 'personalSchedules', schedule.id));
 
-  // Remove corresponding slot locks
+  // Remove corresponding slot locks (both default and professor-prefixed)
   const slots = generate30MinSlots(schedule.startTime, schedule.endTime);
+  const profUid = schedule.professorUid || 'admin-professor';
   for (const slotTime of slots) {
-    const lockId = `${schedule.date}_${slotTime}`;
-    batch.delete(doc(db, 'slotLocks', lockId));
+    batch.delete(doc(db, 'slotLocks', `${schedule.date}_${slotTime}`));
+    batch.delete(doc(db, 'slotLocks', `${profUid}_${schedule.date}_${slotTime}`));
   }
   await batch.commit();
 }
@@ -347,33 +386,43 @@ export async function updatePersonalSchedule(
   if (isSupabaseConfigured) {
     return sbUpdatePersonalSchedule(oldSchedule, updatedData, conflictAppointments);
   }
+  const prof = getCurrentProfessorAttribution(updatedData);
+  const oldProfUid = oldSchedule.professorUid || prof.professorUid || 'admin-professor';
   const batch = writeBatch(db);
 
   // 1. Remove old slot locks
   const oldSlots = generate30MinSlots(oldSchedule.startTime, oldSchedule.endTime);
   for (const slotTime of oldSlots) {
-    const lockId = `${oldSchedule.date}_${slotTime}`;
-    batch.delete(doc(db, 'slotLocks', lockId));
+    batch.delete(doc(db, 'slotLocks', `${oldSchedule.date}_${slotTime}`));
+    batch.delete(doc(db, 'slotLocks', `${oldProfUid}_${oldSchedule.date}_${slotTime}`));
   }
 
   // 2. Update personalSchedule document
   const personalRef = doc(db, 'personalSchedules', oldSchedule.id);
   batch.update(personalRef, {
     ...updatedData,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
   });
 
   // 3. Create new slot locks
   const newSlots = generate30MinSlots(updatedData.startTime, updatedData.endTime);
+  const lockPrefix = prof.professorUid === 'admin-professor' ? '' : `${prof.professorUid}_`;
   for (const slotTime of newSlots) {
-    const lockId = `${updatedData.date}_${slotTime}`;
+    const lockId = `${lockPrefix}${updatedData.date}_${slotTime}`;
     const lockRef = doc(db, 'slotLocks', lockId);
     batch.set(lockRef, {
+      id: lockId,
       slotKey: lockId,
       date: updatedData.date,
       time: slotTime,
       type: 'personal',
       semesterId: updatedData.semesterId,
       referenceId: oldSchedule.id,
+      professorUid: prof.professorUid,
+      professorName: prof.professorName,
+      professorEmail: prof.professorEmail,
       createdAt: serverTimestamp(),
     });
   }
@@ -413,11 +462,13 @@ export async function getStudents(semesterId: string): Promise<StudentRecord[]> 
 
 export async function addStudentsBatch(
   semesterId: string,
-  students: Array<{ studentId: string; name?: string; firstSemesterInPerson?: boolean }>
+  students: Array<{ studentId: string; name?: string; firstSemesterInPerson?: boolean }>,
+  profOverride?: ProfessorAttribution
 ): Promise<number> {
   if (isSupabaseConfigured) {
-    return sbAddStudentsBatch(semesterId, students);
+    return sbAddStudentsBatch(semesterId, students, profOverride);
   }
+  const prof = getCurrentProfessorAttribution(profOverride);
   const batch = writeBatch(db);
   let count = 0;
   for (const s of students) {
@@ -432,6 +483,9 @@ export async function addStudentsBatch(
       name: s.name?.trim() || '',
       active: true,
       firstSemesterInPerson: s.firstSemesterInPerson ?? true,
+      professorUid: prof.professorUid,
+      professorName: prof.professorName,
+      professorEmail: prof.professorEmail,
       createdAt: serverTimestamp(),
     });
     count++;
@@ -505,6 +559,20 @@ export async function isStudentEligible(semesterId: string, studentId: string): 
 // ----------------------------------------------------
 // 5. Public Availability Calculation (학생용 달력 & 슬롯)
 // ----------------------------------------------------
+
+export async function getSlotLocks(semesterId: string): Promise<SlotLock[]> {
+  if (isSupabaseConfigured) {
+    return sbGetSlotLocks(semesterId);
+  }
+  try {
+    const q = query(collection(db, 'slotLocks'), where('semesterId', '==', semesterId));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() } as SlotLock));
+  } catch (err) {
+    console.error('Error fetching slot locks:', err);
+    return [];
+  }
+}
 
 /**
  * Calculates available time slots for a specific date in the student view.
@@ -616,6 +684,9 @@ export interface BookingRequest {
   consultationType: ConsultationType;
   date: string;
   startTime: string; // e.g. "14:30"
+  professorUid?: string;
+  professorName?: string;
+  professorEmail?: string;
 }
 
 export interface BookingResult {
@@ -695,6 +766,13 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
 
     const { subSlots, endTime } = getAppointmentSubSlots(req.startTime, 60);
 
+    const requestedProf = {
+      professorUid: (req.professorUid || 'admin-professor').trim(),
+      professorName:
+        (req.professorName || '박성우 교수').replace(/\s*\(관리자\)\s*$/, '').trim() || '박성우 교수',
+      professorEmail: (req.professorEmail || 'sungwoopark1224@gmail.com').trim().toLowerCase(),
+    };
+
     // C. Validate student ID in this semester (CASE 7 requirement)
     const cleanStudentId = req.studentId.trim();
     const studentDocRef = doc(db, 'students', `${req.semesterId}_${cleanStudentId}`);
@@ -708,15 +786,63 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
     }
 
     const studentData = studentDoc.data() as StudentRecord;
-    if (req.consultationType === 'online' && studentData.firstSemesterInPerson === false) {
+    const studentProfEmail = (studentData.professorEmail || 'sungwoopark1224@gmail.com')
+      .trim()
+      .toLowerCase();
+    const studentProfUid = (studentData.professorUid || 'admin-professor').trim();
+    const studentProfName = (studentData.professorName || '박성우 교수')
+      .replace(/\s*\(관리자\)\s*$/, '')
+      .trim();
+
+    const isMatchingAdvisor =
+      studentProfEmail === requestedProf.professorEmail ||
+      studentProfUid === requestedProf.professorUid ||
+      studentProfName === requestedProf.professorName;
+
+    if (!isMatchingAdvisor) {
       return {
         success: false,
-        errorMessage: '올해 처음으로 상담을 진행하는 학생(1학기 대면 상담 미진행)은 반드시 대면 상담을 선택해야 합니다.',
+        errorMessage: `입력하신 학번(${cleanStudentId})의 배정된 지도교수는 [${studentProfName}]입니다. 상단 '지도교수 선택'에서 [${studentProfName}]을(를) 선택한 후 신청해주세요.`,
         code: 'INVALID_STUDENT',
       };
     }
 
-    // D. Validate class schedule overlap
+    if (req.consultationType === 'online') {
+      const profSettingsMap = await getProfessorConsultationSettingsMap(
+        semester.googleFormUrl || ''
+      );
+      const profConfig = resolveProfessorConsultationSettings(
+        {
+          professorUid: studentProfUid,
+          professorName: studentProfName,
+          professorEmail: studentProfEmail,
+        },
+        profSettingsMap,
+        semester.googleFormUrl || ''
+      );
+      if (!profConfig.onlineEnabled) {
+        return {
+          success: false,
+          errorMessage: `${studentProfName}님은 현재 비대면 상담을 운영하지 않습니다. 대면 상담으로 신청해주세요.`,
+          code: 'OUT_OF_RANGE',
+        };
+      }
+      if (studentData.firstSemesterInPerson === false) {
+        return {
+          success: false,
+          errorMessage: '올해 처음으로 상담을 진행하는 학생(1학기 대면 상담 미진행)은 반드시 대면 상담을 선택해야 합니다.',
+          code: 'INVALID_STUDENT',
+        };
+      }
+    }
+
+    const assignedProf = {
+      professorUid: studentProfUid,
+      professorName: studentProfName,
+      professorEmail: studentProfEmail,
+    };
+
+    // D. Validate class schedule overlap (scoped to professor)
     const dayOfWeekIdx = getDayOfWeek(req.date);
     const weekdayName = getWeekdayNameEn(dayOfWeekIdx);
     const classQuery = query(
@@ -727,6 +853,11 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
     const classDocs = await getDocs(classQuery);
     for (const cDoc of classDocs.docs) {
       const cls = cDoc.data() as ClassSchedule;
+      const clsEmail = (cls.professorEmail || 'sungwoopark1224@gmail.com').trim().toLowerCase();
+      const clsUid = (cls.professorUid || 'admin-professor').trim();
+      if (clsEmail !== assignedProf.professorEmail && clsUid !== assignedProf.professorUid) {
+        continue;
+      }
       if (isDateInRange(req.date, cls.startDate, cls.endDate)) {
         if (hasTimeOverlap(req.startTime, endTime, cls.startTime, cls.endTime)) {
           return {
@@ -740,8 +871,12 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
 
     // E. Run Atomic Transaction for Slot Locks & Appointment creation
     const aptRef = doc(collection(db, 'appointments'));
-    const lock1Ref = doc(db, 'slotLocks', `${req.date}_${subSlots[0]}`);
-    const lock2Ref = doc(db, 'slotLocks', `${req.date}_${subSlots[1]}`);
+    const lockPrefix =
+      assignedProf.professorUid === 'admin-professor' ? '' : `${assignedProf.professorUid}_`;
+    const lock1Id = `${lockPrefix}${req.date}_${subSlots[0]}`;
+    const lock2Id = `${lockPrefix}${req.date}_${subSlots[1]}`;
+    const lock1Ref = doc(db, 'slotLocks', lock1Id);
+    const lock2Ref = doc(db, 'slotLocks', lock2Id);
 
     const confirmationCode = generateConfirmationCode(req.date);
 
@@ -760,25 +895,31 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
 
       // 3. Create Slot Lock 1
       transaction.set(lock1Ref, {
-        id: `${req.date}_${subSlots[0]}`,
-        slotKey: `${req.date}_${subSlots[0]}`,
+        id: lock1Id,
+        slotKey: lock1Id,
         date: req.date,
         time: subSlots[0],
         type: 'appointment',
         semesterId: req.semesterId,
         referenceId: aptRef.id,
+        professorUid: assignedProf.professorUid,
+        professorName: assignedProf.professorName,
+        professorEmail: assignedProf.professorEmail,
         createdAt: serverTimestamp(),
       });
 
       // 4. Create Slot Lock 2
       transaction.set(lock2Ref, {
-        id: `${req.date}_${subSlots[1]}`,
-        slotKey: `${req.date}_${subSlots[1]}`,
+        id: lock2Id,
+        slotKey: lock2Id,
         date: req.date,
         time: subSlots[1],
         type: 'appointment',
         semesterId: req.semesterId,
         referenceId: aptRef.id,
+        professorUid: assignedProf.professorUid,
+        professorName: assignedProf.professorName,
+        professorEmail: assignedProf.professorEmail,
         createdAt: serverTimestamp(),
       });
 
@@ -797,6 +938,9 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
         endAt: `${req.date}T${endTime}:00+09:00`,
         status: 'confirmed',
         confirmationCode,
+        professorUid: assignedProf.professorUid,
+        professorName: assignedProf.professorName,
+        professorEmail: assignedProf.professorEmail,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -818,6 +962,9 @@ export async function bookAppointmentAtomic(req: BookingRequest): Promise<Bookin
       endAt: `${req.date}T${endTime}:00+09:00`,
       status: 'confirmed',
       confirmationCode,
+      professorUid: assignedProf.professorUid,
+      professorName: assignedProf.professorName,
+      professorEmail: assignedProf.professorEmail,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

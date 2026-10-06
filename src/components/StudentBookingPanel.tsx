@@ -13,9 +13,17 @@ import {
   Video,
   FileText,
   ExternalLink,
+  GraduationCap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TimeSlotOption, SemesterSettings, Appointment, ConsultationType } from '../types';
+import {
+  TimeSlotOption,
+  SemesterSettings,
+  Appointment,
+  ConsultationType,
+  ProfessorAttribution,
+  ProfessorConsultationSettings,
+} from '../types';
 import { formatKoreanDate, formatPhoneNumber, getKoreanHoliday } from '../lib/dateUtils';
 import { appointmentFormSchema } from '../lib/validation';
 import { bookAppointmentAtomic } from '../lib/firestoreService';
@@ -25,6 +33,8 @@ interface StudentBookingPanelProps {
   timeSlots: TimeSlotOption[];
   semester: SemesterSettings;
   loadingSlots: boolean;
+  selectedProfessor: Required<ProfessorAttribution>;
+  professorConsultationSettings: ProfessorConsultationSettings;
   onBookingSuccess: (appointment: Appointment) => void;
 }
 
@@ -33,6 +43,8 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
   timeSlots,
   semester,
   loadingSlots,
+  selectedProfessor,
+  professorConsultationSettings,
   onBookingSuccess,
 }) => {
   const [selectedTime, setSelectedTime] = useState<string>(''); // e.g. "14:30"
@@ -46,13 +58,28 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   const isFirstSemester = semester.semester === 1;
+  const isParkProfessor =
+    selectedProfessor.professorName.includes('박성우') ||
+    selectedProfessor.professorUid === 'admin-professor';
+  const isProfessorOnlineEnabled = Boolean(professorConsultationSettings?.onlineEnabled);
+  const professorGoogleFormUrl = (professorConsultationSettings?.googleFormUrl || '').trim();
+  const onlineDisabled = isFirstSemester || !isProfessorOnlineEnabled;
+  const professorOfficeRoom = selectedProfessor.professorName.includes('유제혁')
+    ? '차미리사관 348호'
+    : '차미리사관 130호';
 
-  // Enforce in_person if semester is 1st semester
+  // Enforce in_person if semester is 1st semester or selected professor has online consultation disabled
   useEffect(() => {
-    if (isFirstSemester && consultationType === 'online') {
+    if (onlineDisabled && consultationType === 'online') {
       setConsultationType('in_person');
     }
-  }, [isFirstSemester, consultationType]);
+  }, [onlineDisabled, consultationType]);
+
+  // Reset selected time & server error when date or selected professor changes
+  useEffect(() => {
+    setSelectedTime('');
+    setServerError(null);
+  }, [selectedDate, selectedProfessor.professorUid]);
 
   const holiday = getKoreanHoliday(selectedDate);
 
@@ -108,6 +135,9 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
         consultationType,
         date: selectedDate,
         startTime: selectedTime,
+        professorUid: selectedProfessor.professorUid,
+        professorName: selectedProfessor.professorName,
+        professorEmail: selectedProfessor.professorEmail,
       });
 
       if (res.success && res.appointment) {
@@ -166,10 +196,16 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
       <div className="pb-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
-            <span className="text-xs font-bold text-[#B70050] uppercase tracking-wider">
-              선택한 상담 일자
-            </span>
-            <h3 className="text-lg sm:text-xl font-bold text-neutral-900 mt-0.5 flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-[#B70050] uppercase tracking-wider">
+                선택한 상담 일자
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FDF2F6] border border-[#F5C2D7] text-[#B70050] text-[11px] font-bold">
+                <GraduationCap className="w-3 h-3" />
+                <span>지도교수: {selectedProfessor.professorName}</span>
+              </span>
+            </div>
+            <h3 className="text-lg sm:text-xl font-bold text-neutral-900 mt-1 flex items-center gap-2 flex-wrap">
               <span>{formatKoreanDate(selectedDate)}</span>
               {holiday.isHoliday && (
                 <span className="text-xs font-semibold text-rose-600">
@@ -357,7 +393,11 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                   상담 유형 선택 <span className="text-[#B70050]">*</span>
                 </label>
                 <span className="text-[11px] font-semibold text-[#B70050]">
-                  {isFirstSemester ? '1학기: 전원 대면 진행' : '2학기: 1학기 대면 완료자 비대면 가능'}
+                  {isFirstSemester
+                    ? '1학기: 전원 대면 진행'
+                    : isProfessorOnlineEnabled
+                    ? `${selectedProfessor.professorName}: 비대면 선택 가능`
+                    : `${selectedProfessor.professorName}: 대면 상담 전용 (비대면 비활성)`}
                 </span>
               </div>
 
@@ -389,7 +429,7 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                     </span>
                   </div>
                   <p className="text-[11px] text-neutral-500 leading-snug">
-                    차미리사관 130호 연구실 방문
+                    {professorOfficeRoom} 연구실 방문
                   </p>
                 </button>
 
@@ -397,12 +437,12 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                 <button
                   id="btn-type-online"
                   type="button"
-                  disabled={isFirstSemester}
+                  disabled={onlineDisabled}
                   onClick={() => {
-                    if (!isFirstSemester) setConsultationType('online');
+                    if (!onlineDisabled) setConsultationType('online');
                   }}
                   className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                    isFirstSemester
+                    onlineDisabled
                       ? 'bg-neutral-100/80 border-dashed border-neutral-200 text-neutral-400 opacity-60 cursor-not-allowed'
                       : consultationType === 'online'
                       ? 'bg-[#FDF2F6] border-[#B70050] ring-2 ring-[#B70050]/15 cursor-pointer'
@@ -412,15 +452,15 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                   <div className="flex items-center justify-between w-full mb-1">
                     <span
                       className={`inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold ${
-                        isFirstSemester ? 'text-neutral-400' : 'text-neutral-900'
+                        onlineDisabled ? 'text-neutral-400' : 'text-neutral-900'
                       }`}
                     >
                       <Video className={`w-4 h-4 ${consultationType === 'online' ? 'text-[#B70050]' : 'text-neutral-400'}`} />
                       <span>비대면 상담</span>
                     </span>
-                    {isFirstSemester ? (
+                    {onlineDisabled ? (
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-500">
-                        2학기 가능
+                        {isFirstSemester ? '2학기 가능' : '비활성화'}
                       </span>
                     ) : (
                       <span
@@ -435,27 +475,33 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                     )}
                   </div>
                   <p className="text-[11px] text-neutral-500 leading-snug">
-                    {isFirstSemester ? '1학기는 전원 대면으로 진행' : '1학기 대면 완료자 · 구글폼 필수'}
+                    {isFirstSemester
+                      ? '1학기는 전원 대면으로 진행'
+                      : !isProfessorOnlineEnabled
+                      ? `${selectedProfessor.professorName} 비대면 미사용 설정`
+                      : '1학기 대면 완료자 · 구글폼 필수'}
                   </p>
                 </button>
               </div>
 
-              {/* Caution Note on Consultation Type */}
-              <div className="mt-2.5 p-3 rounded-xl bg-neutral-50 border border-neutral-200/80 text-[11px] sm:text-xs text-neutral-600 space-y-1.5 leading-relaxed">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
-                  <p>
-                    <strong className="font-bold text-neutral-900">지도교수 변경 학생 주의사항:</strong> 1학기에 박성우 교수가 아닌 다른 교수님께 지도교수 배정을 받고 <strong className="font-bold text-[#B70050]">2학기에 박성우 교수가 지도교수로 배정된 학생은 반드시 대면으로 진행</strong>해야 합니다.
-                    {isFirstSemester && ' (1학기 정기 상담은 모두 대면으로 진행됩니다.)'}
-                  </p>
+              {/* Caution Note on Consultation Type (Shown only when 박성우 교수 is selected) */}
+              {isParkProfessor && (
+                <div className="mt-2.5 p-3 rounded-xl bg-neutral-50 border border-neutral-200/80 text-[11px] sm:text-xs text-neutral-600 space-y-1.5 leading-relaxed">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
+                    <p>
+                      <strong className="font-bold text-neutral-900">지도교수 변경 학생 주의사항:</strong> 1학기에 박성우 교수가 아닌 다른 교수님께 지도교수 배정을 받고 <strong className="font-bold text-[#B70050]">2학기에 박성우 교수가 지도교수로 배정된 학생은 반드시 대면으로 진행</strong>해야 합니다.
+                      {isFirstSemester && ' (1학기 정기 상담은 모두 대면으로 진행됩니다.)'}
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <FileText className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
+                    <p>
+                      <strong className="font-bold text-neutral-900">비대면 신청 시 유의사항:</strong> 비대면 신청자도 <strong className="font-bold text-[#B70050]">반드시 상담 날짜와 시간을 하나 신청</strong>해야 하며, <strong className="font-bold text-[#B70050]">구글폼을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
+                    </p>
+                  </div>
                 </div>
-                <div className="flex items-start gap-2">
-                  <FileText className="w-3.5 h-3.5 text-[#B70050] shrink-0 mt-0.5" />
-                  <p>
-                    <strong className="font-bold text-neutral-900">비대면 신청 시 유의사항:</strong> 비대면 신청자도 <strong className="font-bold text-[#B70050]">반드시 상담 날짜와 시간을 하나 신청</strong>해야 하며, <strong className="font-bold text-[#B70050]">구글폼을 통해 상담에 필요한 내용을 작성</strong>해야 합니다.
-                  </p>
-                </div>
-              </div>
+              )}
 
               {/* Highlighted Google Form Action Box when Online is selected */}
               <AnimatePresence>
@@ -471,24 +517,24 @@ export const StudentBookingPanel: React.FC<StudentBookingPanelProps> = ({
                         <FileText className="w-4 h-4 text-[#B70050] shrink-0 mt-0.5" />
                         <div className="leading-relaxed">
                           <span className="font-bold text-[#B70050] block mb-0.5">
-                            [필수] 비대면 상담 사전 구글폼 작성 안내
+                            [필수] {selectedProfessor.professorName} 비대면 상담 사전 구글폼 작성 안내
                           </span>
-                          비대면 상담을 신청하는 학생은 상담 진행 전까지 반드시 구글폼을 통해 상담에 필요한 내용을 작성하여 제출해야 합니다.
+                          비대면 상담을 신청하는 학생은 상담 진행 전까지 반드시 {selectedProfessor.professorName}님의 구글폼을 통해 상담에 필요한 내용을 작성하여 제출해야 합니다.
                         </div>
                       </div>
-                      {semester.googleFormUrl ? (
+                      {professorGoogleFormUrl ? (
                         <a
-                          href={semester.googleFormUrl}
+                          href={professorGoogleFormUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="w-full py-2 px-3 bg-white hover:bg-[#B70050] text-[#B70050] hover:text-white border border-[#B70050] rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                         >
-                          <span>구글폼(Google Form) 작성 바로가기</span>
+                          <span>{selectedProfessor.professorName} 구글폼(Google Form) 작성 바로가기</span>
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       ) : (
                         <p className="text-[11px] text-[#B70050] font-medium bg-white/80 px-2.5 py-1.5 rounded-lg border border-[#F5C2D7]">
-                          ※ 교수님이 구글폼 링크를 등록하면 이곳과 신청 완료 화면에서 바로 접속할 수 있습니다.
+                          ※ {selectedProfessor.professorName}님이 구글폼 링크를 등록하면 이곳과 신청 완료 화면에서 바로 접속할 수 있습니다.
                         </p>
                       )}
                     </div>

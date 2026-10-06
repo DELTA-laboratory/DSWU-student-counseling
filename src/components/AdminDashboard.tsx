@@ -23,7 +23,11 @@ import {
   ExternalLink,
   Link as LinkIcon,
   Edit2,
+  UserPlus,
+  KeyRound,
+  Lock,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import {
   SemesterSettings,
   Appointment,
@@ -31,11 +35,14 @@ import {
   PersonalSchedule,
   StudentRecord,
   Weekday,
+  ProfessorConsultationSettings,
 } from '../types';
 import { formatKoreanDate, getNowSeoul } from '../lib/dateUtils';
 import {
   saveSemester,
   updateSemesterGoogleFormUrl,
+  saveProfessorConsultationSettings,
+  resolveProfessorConsultationSettings,
   addClassSchedule,
   updateClassSchedule,
   deleteClassSchedule,
@@ -60,12 +67,59 @@ interface AdminDashboardProps {
   classSchedules: ClassSchedule[];
   personalSchedules: PersonalSchedule[];
   students: StudentRecord[];
+  professorSettingsMap: Record<string, ProfessorConsultationSettings>;
   onRefresh: () => void;
   onLogout: () => void;
   userEmail?: string;
 }
 
-type TabType = 'overview' | 'appointments' | 'classes' | 'personal' | 'students' | 'semester';
+type TabType = 'overview' | 'appointments' | 'classes' | 'personal' | 'students' | 'semester' | 'accounts';
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTE_OPTIONS = ['00', '30'] as const;
+
+interface TimeSelect30MinProps {
+  value: string;
+  onChange: (newTime: string) => void;
+  className?: string;
+}
+
+const TimeSelect30Min: React.FC<TimeSelect30MinProps> = ({ value, onChange, className = '' }) => {
+  const parts = (value || '09:00').split(':');
+  const rawHour = parts[0] ? parts[0].padStart(2, '0') : '09';
+  const rawMin = parts[1] || '00';
+  const hour = HOUR_OPTIONS.includes(rawHour) ? rawHour : '09';
+  const minute = rawMin === '30' ? '30' : '00';
+
+  return (
+    <div className={`inline-flex items-center gap-1 ${className}`}>
+      <select
+        value={hour}
+        onChange={(e) => onChange(`${e.target.value}:${minute}`)}
+        className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-xs font-medium text-neutral-900 focus:outline-none focus:border-[#B70050] cursor-pointer tabular-nums"
+        aria-label="시간(시) 선택"
+      >
+        {HOUR_OPTIONS.map((h) => (
+          <option key={h} value={h}>
+            {h}시
+          </option>
+        ))}
+      </select>
+      <select
+        value={minute}
+        onChange={(e) => onChange(`${hour}:${e.target.value}`)}
+        className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-xs font-medium text-neutral-900 focus:outline-none focus:border-[#B70050] cursor-pointer tabular-nums"
+        aria-label="시간(분) 선택"
+      >
+        {MINUTE_OPTIONS.map((m) => (
+          <option key={m} value={m}>
+            {m}분
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+};
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   semester,
@@ -74,11 +128,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   classSchedules,
   personalSchedules,
   students,
+  professorSettingsMap,
   onRefresh,
   onLogout,
   userEmail,
 }) => {
+  const {
+    user,
+    isSuperAdmin,
+    adminAccount,
+    professorAccounts,
+    addProfessorAccount,
+    updateProfessorPassword,
+    deleteProfessorAccount,
+    updateAdminCredentials,
+  } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('overview');
+
+  // Professor & Admin Account Management Form States
+  const [newProfName, setNewProfName] = useState('');
+  const [newProfEmail, setNewProfEmail] = useState('');
+  const [newProfPassword, setNewProfPassword] = useState('');
+  const [editingProfUid, setEditingProfUid] = useState<string | null>(null);
+  const [editingProfName, setEditingProfName] = useState('');
+  const [editingProfPassword, setEditingProfPassword] = useState('');
+  const [showAdminPwChange, setShowAdminPwChange] = useState(false);
+  const [adminEmailInput, setAdminEmailInput] = useState(adminAccount?.email || userEmail || '');
+  const [adminNewPassword, setAdminNewPassword] = useState('');
+  const [accountActionLoading, setAccountActionLoading] = useState(false);
 
   // Search & filter states
   const [studentSearch, setStudentSearch] = useState('');
@@ -149,8 +226,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     googleFormUrl: semester?.googleFormUrl || '',
   });
 
-  const [quickGoogleFormUrl, setQuickGoogleFormUrl] = useState(semester?.googleFormUrl || '');
+  const currentProfAttribution = {
+    professorUid: (user?.uid || 'admin-professor').trim(),
+    professorName: (user?.displayName || '박성우 교수').replace(/\s*\(관리자\)\s*$/, '').trim() || '박성우 교수',
+    professorEmail: (user?.email || userEmail || 'sungwoopark1224@gmail.com').trim().toLowerCase(),
+  };
+
+  const myConsultationSettings = resolveProfessorConsultationSettings(
+    currentProfAttribution,
+    professorSettingsMap,
+    semester?.googleFormUrl || ''
+  );
+
+  const [myOnlineEnabled, setMyOnlineEnabled] = useState<boolean>(
+    myConsultationSettings.onlineEnabled
+  );
+  const [quickGoogleFormUrl, setQuickGoogleFormUrl] = useState(
+    myConsultationSettings.googleFormUrl || ''
+  );
   const [savingFormUrl, setSavingFormUrl] = useState(false);
+
+  useEffect(() => {
+    if (!isSuperAdmin && (activeTab === 'accounts' || activeTab === 'semester')) {
+      setActiveTab('overview');
+    }
+  }, [isSuperAdmin, activeTab]);
+
+  useEffect(() => {
+    const resolved = resolveProfessorConsultationSettings(
+      currentProfAttribution,
+      professorSettingsMap,
+      semester?.googleFormUrl || ''
+    );
+    setMyOnlineEnabled(resolved.onlineEnabled);
+    setQuickGoogleFormUrl(resolved.googleFormUrl || '');
+  }, [
+    currentProfAttribution.professorUid,
+    currentProfAttribution.professorEmail,
+    professorSettingsMap,
+    semester?.googleFormUrl,
+  ]);
 
   useEffect(() => {
     if (semester) {
@@ -163,7 +278,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         dayEnd: semester.dayEnd,
         googleFormUrl: semester.googleFormUrl || '',
       });
-      setQuickGoogleFormUrl(semester.googleFormUrl || '');
     }
   }, [semester]);
 
@@ -172,13 +286,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  // Metrics computation
-  const confirmedCount = appointments.filter((a) => a.status === 'confirmed').length;
-  const canceledCount = appointments.filter((a) => a.status === 'canceled').length;
-  const activeStudentsCount = students.filter((s) => s.active).length;
+  const isOwnedByCurrentProfessor = (rec: {
+    professorUid?: string;
+    professorEmail?: string;
+    professorName?: string;
+  }): boolean => {
+    const recEmail = (rec.professorEmail || '').trim().toLowerCase();
+    const recUid = (rec.professorUid || '').trim();
+    const recName = (rec.professorName || '').replace(/\s*\(관리자\)\s*$/, '').trim();
 
-  // Upcoming confirmed appointment
-  const nextAppointment = appointments
+    if (recEmail && currentProfAttribution.professorEmail) {
+      return recEmail === currentProfAttribution.professorEmail;
+    }
+    if (recUid && currentProfAttribution.professorUid) {
+      return recUid === currentProfAttribution.professorUid;
+    }
+    if (recName && currentProfAttribution.professorName) {
+      return recName === currentProfAttribution.professorName;
+    }
+    return (
+      currentProfAttribution.professorEmail === 'sungwoopark1224@gmail.com' ||
+      currentProfAttribution.professorUid === 'admin-professor'
+    );
+  };
+
+  // Per-professor scoped datasets
+  const myAppointments = appointments.filter(isOwnedByCurrentProfessor);
+  const myClassSchedules = classSchedules.filter(isOwnedByCurrentProfessor);
+  const myPersonalSchedules = personalSchedules.filter(isOwnedByCurrentProfessor);
+  const myStudents = students.filter(isOwnedByCurrentProfessor);
+
+  // Metrics computation (scoped to the logged-in professor)
+  const confirmedCount = myAppointments.filter((a) => a.status === 'confirmed').length;
+  const canceledCount = myAppointments.filter((a) => a.status === 'canceled').length;
+  const activeStudentsCount = myStudents.filter((s) => s.active).length;
+
+  // Upcoming confirmed appointment (scoped to the logged-in professor)
+  const nextAppointment = myAppointments
     .filter((a) => a.status === 'confirmed')
     .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))[0];
 
@@ -192,12 +336,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         await updateClassSchedule(editingClassId, {
           ...newClass,
           semesterId: semester.id,
+          ...currentProfAttribution,
         });
         showNotification('success', '수업 일정이 성공적으로 수정되었습니다.');
       } else {
         await addClassSchedule({
           ...newClass,
           semesterId: semester.id,
+          ...currentProfAttribution,
         });
         showNotification('success', '수업 일정이 성공적으로 등록되었습니다.');
       }
@@ -253,14 +399,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         startTime: newPersonal.startTime,
         endTime: newPersonal.endTime,
         semesterId: semester.id,
+        ...currentProfAttribution,
       };
 
-      // Check conflicts
+      // Check conflicts (only against this professor's appointments)
       const conflicts = await checkPersonalScheduleConflicts(
         newPersonal.date,
         newPersonal.startTime,
         newPersonal.endTime,
-        semester.id
+        semester.id,
+        currentProfAttribution
       );
 
       if (conflicts.length > 0) {
@@ -363,10 +511,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     try {
-      const added = await addStudentsBatch(semester.id, studentList);
+      const added = await addStudentsBatch(semester.id, studentList, currentProfAttribution);
       setShowAddStudents(false);
       setBulkStudentText('');
-      showNotification('success', `${added}명의 지도학생이 등록되었습니다.`);
+      showNotification(
+        'success',
+        `${added}명의 지도학생이 ${currentProfAttribution.professorName} 지도교수 명단으로 등록되었습니다.`
+      );
       onRefresh();
     } catch {
       showNotification('error', '학생 명단 등록 실패');
@@ -425,16 +576,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleSaveQuickGoogleFormUrl = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!semester) return;
+  const handleToggleMyOnlineEnabled = async (nextEnabled: boolean) => {
+    setMyOnlineEnabled(nextEnabled);
     setSavingFormUrl(true);
     try {
-      await updateSemesterGoogleFormUrl(semester.id, quickGoogleFormUrl);
-      showNotification('success', '비대면 상담용 구글폼 링크가 저장되었습니다.');
+      await saveProfessorConsultationSettings(
+        {
+          ...currentProfAttribution,
+          onlineEnabled: nextEnabled,
+          googleFormUrl: quickGoogleFormUrl.trim(),
+        },
+        semester?.id
+      );
+      showNotification(
+        'success',
+        nextEnabled
+          ? `${currentProfAttribution.professorName}님의 비대면 상담이 [사용(활성화)]으로 설정되었습니다.`
+          : `${currentProfAttribution.professorName}님의 비대면 상담이 [미사용(비활성화)]으로 설정되었습니다.`
+      );
       onRefresh();
     } catch {
-      showNotification('error', '구글폼 링크 저장에 실패했습니다.');
+      showNotification('error', '비대면 상담 사용 여부 저장에 실패했습니다.');
+    } finally {
+      setSavingFormUrl(false);
+    }
+  };
+
+  const handleSaveQuickGoogleFormUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingFormUrl(true);
+    try {
+      await saveProfessorConsultationSettings(
+        {
+          ...currentProfAttribution,
+          onlineEnabled: myOnlineEnabled,
+          googleFormUrl: quickGoogleFormUrl.trim(),
+        },
+        semester?.id
+      );
+      showNotification(
+        'success',
+        `${currentProfAttribution.professorName}님의 비대면 상담 설정 및 구글폼 링크가 저장되었습니다.`
+      );
+      onRefresh();
+    } catch {
+      showNotification('error', '구글폼 링크 및 비대면 설정 저장에 실패했습니다.');
     } finally {
       setSavingFormUrl(false);
     }
@@ -457,13 +643,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       appointmentMinutes: 60,
       googleFormUrl: editSemesterData.googleFormUrl.trim(),
       active: true,
+      ...currentProfAttribution,
       createdAt: new Date().toISOString(),
     };
 
     try {
       await saveSemester(newSem, semester?.id);
+      if (isSuperAdmin) {
+        await saveProfessorConsultationSettings(
+          {
+            ...currentProfAttribution,
+            onlineEnabled: myOnlineEnabled,
+            googleFormUrl: editSemesterData.googleFormUrl.trim(),
+          },
+          id
+        );
+      }
       setShowSemesterEdit(false);
-      showNotification('success', '학기 설정 및 구글폼 링크가 Supabase에 저장되었습니다.');
+      showNotification('success', '학기 설정 및 구글폼 링크가 저장되었습니다.');
       onRefresh();
     } catch {
       showNotification('error', '학기 설정 저장 실패');
@@ -518,14 +715,75 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Filtered Appointments
-  const filteredAppointments = appointments.filter((a) => {
+  const handleAddProfessorAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAccountActionLoading(true);
+    try {
+      await addProfessorAccount(newProfEmail, newProfPassword, newProfName);
+      setNewProfName('');
+      setNewProfEmail('');
+      setNewProfPassword('');
+      showNotification('success', '새 교수 계정이 추가되었습니다. 이제 해당 이메일과 비밀번호로 교수 로그인이 가능합니다.');
+    } catch (err: any) {
+      showNotification('error', err?.message || '교수 계정 추가에 실패했습니다.');
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  const handleSaveProfessorPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProfUid) return;
+    setAccountActionLoading(true);
+    try {
+      await updateProfessorPassword(editingProfUid, editingProfPassword, editingProfName);
+      setEditingProfUid(null);
+      setEditingProfName('');
+      setEditingProfPassword('');
+      showNotification('success', '교수 계정 정보가 수정되었습니다.');
+    } catch (err: any) {
+      showNotification('error', err?.message || '교수 계정 수정에 실패했습니다.');
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  const handleRemoveProfessorAccount = async (uid: string, email: string) => {
+    if (!confirm(`교수 계정(${email})을 삭제하시겠습니까? 삭제 즉시 해당 계정의 로그인이 차단됩니다.`)) return;
+    setAccountActionLoading(true);
+    try {
+      await deleteProfessorAccount(uid);
+      showNotification('success', '교수 계정이 삭제되었습니다.');
+    } catch (err: any) {
+      showNotification('error', err?.message || '교수 계정 삭제에 실패했습니다.');
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  const handleUpdateAdminAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAccountActionLoading(true);
+    try {
+      await updateAdminCredentials(adminEmailInput || adminAccount?.email || userEmail || '', adminNewPassword);
+      setAdminNewPassword('');
+      setShowAdminPwChange(false);
+      showNotification('success', '관리자 계정 비밀번호가 변경되었습니다.');
+    } catch (err: any) {
+      showNotification('error', err?.message || '관리자 계정 변경에 실패했습니다.');
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  // Filtered Appointments (scoped to logged-in professor)
+  const filteredAppointments = myAppointments.filter((a) => {
     if (appointmentFilter === 'all') return true;
     return a.status === appointmentFilter;
   });
 
-  // Filtered Students
-  const filteredStudents = students.filter((s) => {
+  // Filtered Students (scoped to logged-in professor)
+  const filteredStudents = myStudents.filter((s) => {
     if (!studentSearch) return true;
     return (
       s.studentId.toLowerCase().includes(studentSearch.toLowerCase()) ||
@@ -540,7 +798,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="px-2.5 py-1 rounded-md bg-[#B70050] text-white font-bold text-xs tracking-wider uppercase">
-              Admin
+              {isSuperAdmin ? 'Admin (관리자)' : 'Professor (교수)'}
             </span>
             <h1 className="text-base font-bold tracking-tight text-neutral-900">교수 관리자 포털</h1>
             {semester && (
@@ -551,7 +809,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
-            <span className="text-xs text-neutral-500 hidden md:inline">{userEmail}</span>
+            <span className="text-xs text-neutral-500 hidden md:inline">
+              {user?.displayName ? `${user.displayName} (${userEmail})` : userEmail}
+            </span>
             <button
               type="button"
               onClick={onLogout}
@@ -571,10 +831,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {[
               { key: 'overview', label: '대시보드 요약', icon: CalendarCheck },
               { key: 'appointments', label: `상담 현황 (${confirmedCount})`, icon: Calendar },
-              { key: 'classes', label: `수업 일정 (${classSchedules.length})`, icon: BookOpen },
-              { key: 'personal', label: `개인 일정 (${personalSchedules.length})`, icon: Clock },
-              { key: 'students', label: `지도학생 (${students.length})`, icon: Users },
-              { key: 'semester', label: '학기 설정', icon: ShieldCheck },
+              { key: 'classes', label: `수업 일정 (${myClassSchedules.length})`, icon: BookOpen },
+              { key: 'personal', label: `개인 일정 (${myPersonalSchedules.length})`, icon: Clock },
+              { key: 'students', label: `지도학생 (${myStudents.length})`, icon: Users },
+              ...(isSuperAdmin
+                ? [
+                    { key: 'semester', label: '학기 설정', icon: ShieldCheck },
+                    { key: 'accounts', label: `교수 계정 관리 (${professorAccounts.length})`, icon: UserPlus },
+                  ]
+                : []),
             ].map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.key;
@@ -632,7 +897,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="bg-white p-5 rounded-2xl border border-neutral-200">
                 <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1">등록된 지도학생</div>
                 <div className="text-xl font-bold text-[#B70050] tabular-nums">{activeStudentsCount}명</div>
-                <div className="text-[11px] text-neutral-400 mt-1 tabular-nums">총 {students.length}명 중 활성</div>
+                <div className="text-[11px] text-neutral-400 mt-1 tabular-nums">총 {myStudents.length}명 중 활성</div>
               </div>
 
               <div className="bg-white p-5 rounded-2xl border border-neutral-200">
@@ -654,55 +919,117 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
-            {/* Quick Google Form Link Configuration Card */}
+            {/* Per-Professor Online Consultation & Google Form Link Configuration Card */}
             {semester && (
-              <div className="bg-white rounded-2xl border border-neutral-200 p-6">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] flex items-center justify-center shrink-0">
-                      <FileText className="w-4 h-4" />
+              <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] flex items-center justify-center shrink-0 mt-0.5">
+                      <Video className="w-4 h-4" />
                     </div>
                     <div>
-                      <h2 className="text-sm sm:text-base font-bold text-neutral-900">
-                        비대면 상담용 구글폼(Google Form) 링크 설정
-                      </h2>
-                      <p className="text-xs text-neutral-500">
-                        비대면 상담을 신청한 학생들에게 안내되는 사전 질문지 구글폼 주소입니다. (1학기: 전원 대면 / 2학기: 1학기 대면 완료자 비대면 허용)
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h2 className="text-sm sm:text-base font-bold text-neutral-900">
+                          [{currentProfAttribution.professorName}] 비대면 상담 운영 및 구글폼(Google Form) 링크 설정
+                        </h2>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${
+                            myOnlineEnabled
+                              ? 'bg-[#FDF2F6] text-[#B70050] border-[#F5C2D7]'
+                              : 'bg-neutral-100 text-neutral-600 border-neutral-200'
+                          }`}
+                        >
+                          {myOnlineEnabled ? '비대면 상담 사용 중' : '비대면 상담 미사용 (대면 전용)'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-neutral-500 mt-0.5">
+                        교수님별로 비대면 상담 사용 여부와 사전 질문지 구글폼 링크를 개별 설정할 수 있습니다. 설정한 내용은 메인 페이지에서 [{currentProfAttribution.professorName}] 선택 시 즉시 반영됩니다.
                       </p>
                     </div>
                   </div>
-                  {semester.googleFormUrl && (
+                  {quickGoogleFormUrl.trim() && (
                     <a
-                      href={semester.googleFormUrl}
+                      href={quickGoogleFormUrl.trim()}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs font-bold text-[#B70050] hover:underline flex items-center gap-1 self-start sm:self-center shrink-0"
                     >
-                      <span>현재 링크 열기</span>
+                      <span>내 구글폼 링크 열기</span>
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   )}
                 </div>
 
-                <form onSubmit={handleSaveQuickGoogleFormUrl} className="flex flex-col sm:flex-row gap-2.5">
-                  <div className="relative flex-1">
-                    <LinkIcon className="w-4 h-4 text-neutral-400 absolute left-3.5 top-3" />
-                    <input
-                      id="input-quick-google-form-url"
-                      type="url"
-                      placeholder="https://docs.google.com/forms/... 또는 https://forms.gle/..."
-                      value={quickGoogleFormUrl}
-                      onChange={(e) => setQuickGoogleFormUrl(e.target.value)}
-                      className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs sm:text-sm focus:outline-none focus:border-[#B70050]"
-                    />
+                {/* Online Consultation Enable / Disable Selector */}
+                <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs sm:text-sm font-bold text-neutral-900">
+                      비대면 상담 활성화 여부 선택
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-neutral-500 mt-0.5">
+                      '사용함' 선택 시 학생이 메인 페이지에서 [{currentProfAttribution.professorName}]을(를) 선택했을 때 비대면 상담을 신청할 수 있습니다. '사용 안 함' 선택 시 비대면 버튼이 비활성화됩니다.
+                    </p>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={savingFormUrl}
-                    className="px-5 py-2.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-xl text-xs sm:text-sm transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                  <div className="inline-flex items-center gap-1.5 bg-white p-1 rounded-xl border border-neutral-200 shrink-0 self-start sm:self-center">
+                    <button
+                      id="btn-prof-online-enable"
+                      type="button"
+                      disabled={savingFormUrl}
+                      onClick={() => handleToggleMyOnlineEnabled(true)}
+                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        myOnlineEnabled
+                          ? 'bg-[#B70050] text-white shadow-xs'
+                          : 'text-neutral-600 hover:text-neutral-900'
+                      }`}
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      <span>사용함 (비대면 활성화)</span>
+                    </button>
+                    <button
+                      id="btn-prof-online-disable"
+                      type="button"
+                      disabled={savingFormUrl}
+                      onClick={() => handleToggleMyOnlineEnabled(false)}
+                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        !myOnlineEnabled
+                          ? 'bg-neutral-800 text-white shadow-xs'
+                          : 'text-neutral-600 hover:text-neutral-900'
+                      }`}
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>사용 안 함 (비활성화)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Per-Professor Google Form Link Input */}
+                <form onSubmit={handleSaveQuickGoogleFormUrl} className="space-y-2">
+                  <label
+                    htmlFor="input-quick-google-form-url"
+                    className="block text-xs font-bold text-neutral-700"
                   >
-                    {savingFormUrl ? '저장 중...' : '구글폼 링크 저장'}
-                  </button>
+                    {currentProfAttribution.professorName} 전용 비대면 상담 구글폼(Google Form) 링크
+                  </label>
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <div className="relative flex-1">
+                      <LinkIcon className="w-4 h-4 text-neutral-400 absolute left-3.5 top-3" />
+                      <input
+                        id="input-quick-google-form-url"
+                        type="url"
+                        placeholder="https://docs.google.com/forms/... 또는 https://forms.gle/..."
+                        value={quickGoogleFormUrl}
+                        onChange={(e) => setQuickGoogleFormUrl(e.target.value)}
+                        className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs sm:text-sm focus:outline-none focus:border-[#B70050] bg-white"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={savingFormUrl}
+                      className="px-5 py-2.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-xl text-xs sm:text-sm transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      {savingFormUrl ? '저장 중...' : '비대면 설정 및 링크 저장'}
+                    </button>
+                  </div>
                 </form>
               </div>
             )}
@@ -724,7 +1051,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
 
-              {appointments.length === 0 ? (
+              {myAppointments.length === 0 ? (
                 <div className="text-center py-10 text-neutral-400 text-sm">
                   아직 접수된 상담 신청이 없습니다.
                 </div>
@@ -742,7 +1069,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {appointments.slice(0, 5).map((apt) => (
+                      {myAppointments.slice(0, 5).map((apt) => (
                         <tr key={apt.appointmentId} className="hover:bg-neutral-50/70">
                           <td className="py-3 px-3 font-medium text-neutral-900 tabular-nums">{apt.date}</td>
                           <td className="py-3 px-3 text-[#B70050] font-bold tabular-nums">
@@ -864,16 +1191,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       />
                     </div>
                     <div>
-                      <label className="block text-neutral-600 mb-1">시작 시간</label>
-                      <input
-                        type="time"
-                        step={1800}
+                      <label className="block text-neutral-600 mb-1">시작 시간 (30분 단위)</label>
+                      <TimeSelect30Min
                         value={editAppointmentForm.startTime}
-                        onChange={(e) =>
-                          setEditAppointmentForm({ ...editAppointmentForm, startTime: e.target.value })
+                        onChange={(val) =>
+                          setEditAppointmentForm({ ...editAppointmentForm, startTime: val })
                         }
-                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
-                        required
+                        className="w-full"
                       />
                     </div>
                     <div>
@@ -939,6 +1263,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <th className="py-3 px-3">상담 일자</th>
                         <th className="py-3 px-3">시간 (30~60분)</th>
                         <th className="py-3 px-3">상담 유형</th>
+                        <th className="py-3 px-3">담당 교수</th>
                         <th className="py-3 px-3">학생명</th>
                         <th className="py-3 px-3">학번</th>
                         <th className="py-3 px-3">연락처</th>
@@ -966,6 +1291,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 대면
                               </span>
                             )}
+                          </td>
+                          <td className="py-3 px-3 font-semibold text-neutral-700">
+                            {apt.professorName || '박성우 교수'}
                           </td>
                           <td className="py-3 px-3 font-medium text-neutral-900">{apt.studentName}</td>
                           <td className="py-3 px-3 text-neutral-600 font-mono tabular-nums">{apt.studentId}</td>
@@ -1068,7 +1396,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <h3 className="text-xs font-bold text-[#B70050] uppercase">
                     {editingClassId ? '기존 수업 일정 수정' : '새 수업 등록'}
                   </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                     <div>
                       <label className="block text-neutral-600 mb-1">과목명</label>
                       <input
@@ -1095,24 +1423,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-neutral-600 mb-1">수업 시간</label>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="time"
-                          value={newClass.startTime}
-                          onChange={(e) => setNewClass({ ...newClass, startTime: e.target.value })}
-                          className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-center focus:outline-none focus:border-[#B70050]"
-                          required
-                        />
-                        <span>~</span>
-                        <input
-                          type="time"
-                          value={newClass.endTime}
-                          onChange={(e) => setNewClass({ ...newClass, endTime: e.target.value })}
-                          className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-center focus:outline-none focus:border-[#B70050]"
-                          required
-                        />
-                      </div>
+                      <label className="block text-neutral-600 mb-1">시작 시간 (00분 / 30분)</label>
+                      <TimeSelect30Min
+                        value={newClass.startTime}
+                        onChange={(val) => setNewClass({ ...newClass, startTime: val })}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">종료 시간 (00분 / 30분)</label>
+                      <TimeSelect30Min
+                        value={newClass.endTime}
+                        onChange={(val) => setNewClass({ ...newClass, endTime: val })}
+                        className="w-full"
+                      />
                     </div>
                   </div>
                   <div className="flex justify-end gap-2 pt-2">
@@ -1137,22 +1461,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
 
               {/* Class list */}
-              {classSchedules.length === 0 ? (
+              {myClassSchedules.length === 0 ? (
                 <div className="text-center py-10 text-neutral-400 text-sm">
                   등록된 수업 일정이 없습니다.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {classSchedules.map((cls) => (
+                  {myClassSchedules.map((cls) => (
                     <div
                       key={cls.id}
                       className="p-4 rounded-xl border border-neutral-200 bg-white hover:border-[#B70050] transition-all flex items-start justify-between"
                     >
                       <div>
-                        <span className="text-[11px] font-bold text-[#B70050] uppercase">
-                          {cls.weekday === 'monday' ? '월' : cls.weekday === 'tuesday' ? '화' : cls.weekday === 'wednesday' ? '수' : cls.weekday === 'thursday' ? '목' : '금'}요일
-                        </span>
-                        <h4 className="font-bold text-sm text-neutral-900 mt-0.5">{cls.title}</h4>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-[#B70050] uppercase">
+                            {cls.weekday === 'monday' ? '월' : cls.weekday === 'tuesday' ? '화' : cls.weekday === 'wednesday' ? '수' : cls.weekday === 'thursday' ? '목' : '금'}요일
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] text-[10px] font-bold">
+                            {cls.professorName || '박성우 교수'}
+                          </span>
+                        </div>
+                        <h4 className="font-bold text-sm text-neutral-900 mt-1">{cls.title}</h4>
                         <div className="text-xs text-[#B70050] font-semibold mt-0.5 tabular-nums">
                           {cls.startTime} ~ {cls.endTime}
                         </div>
@@ -1223,7 +1552,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <h3 className="text-xs font-bold text-[#B70050] uppercase">
                     {editingPersonalSchedule ? '기존 개인 일정 수정' : '개인 일정 등록'}
                   </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
                     <div>
                       <label className="block text-neutral-600 mb-1">날짜</label>
                       <input
@@ -1235,24 +1564,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       />
                     </div>
                     <div>
-                      <label className="block text-neutral-600 mb-1">시간</label>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="time"
-                          value={newPersonal.startTime}
-                          onChange={(e) => setNewPersonal({ ...newPersonal, startTime: e.target.value })}
-                          className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-center focus:outline-none focus:border-[#B70050]"
-                          required
-                        />
-                        <span>~</span>
-                        <input
-                          type="time"
-                          value={newPersonal.endTime}
-                          onChange={(e) => setNewPersonal({ ...newPersonal, endTime: e.target.value })}
-                          className="w-full px-2 py-2 bg-white rounded-lg border border-neutral-200 text-center focus:outline-none focus:border-[#B70050]"
-                          required
-                        />
-                      </div>
+                      <label className="block text-neutral-600 mb-1">시작 시간 (00분 / 30분)</label>
+                      <TimeSelect30Min
+                        value={newPersonal.startTime}
+                        onChange={(val) => setNewPersonal({ ...newPersonal, startTime: val })}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">종료 시간 (00분 / 30분)</label>
+                      <TimeSelect30Min
+                        value={newPersonal.endTime}
+                        onChange={(val) => setNewPersonal({ ...newPersonal, endTime: val })}
+                        className="w-full"
+                      />
                     </div>
                     <div>
                       <label className="block text-neutral-600 mb-1">일정 제목 (교수만 열람)</label>
@@ -1298,20 +1623,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
 
               {/* Personal list */}
-              {personalSchedules.length === 0 ? (
+              {myPersonalSchedules.length === 0 ? (
                 <div className="text-center py-10 text-neutral-400 text-sm">
                   등록된 개인 일정이 없습니다.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {personalSchedules.map((sch) => (
+                  {myPersonalSchedules.map((sch) => (
                     <div
                       key={sch.id}
                       className="p-4 rounded-xl border border-neutral-200 bg-white hover:border-[#B70050] transition-all flex items-start justify-between"
                     >
                       <div>
-                        <div className="text-xs font-semibold text-neutral-500">{formatKoreanDate(sch.date)}</div>
-                        <h4 className="font-bold text-sm text-neutral-900 mt-0.5">{sch.title}</h4>
+                        <div className="flex items-center gap-1.5">
+                          <div className="text-xs font-semibold text-neutral-500">{formatKoreanDate(sch.date)}</div>
+                          <span className="px-2 py-0.5 rounded-md bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] text-[10px] font-bold">
+                            {sch.professorName || '박성우 교수'}
+                          </span>
+                        </div>
+                        <h4 className="font-bold text-sm text-neutral-900 mt-1">{sch.title}</h4>
                         <div className="text-xs text-[#B70050] font-semibold mt-0.5 tabular-nums">
                           {sch.startTime} ~ {sch.endTime} (차단됨)
                         </div>
@@ -1489,6 +1819,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <tr className="border-b border-neutral-100 text-neutral-400 uppercase tracking-wider">
                         <th className="py-2.5 px-3">학번</th>
                         <th className="py-2.5 px-3">이름</th>
+                        <th className="py-2.5 px-3">지도교수</th>
                         <th className="py-2.5 px-3">올해(1학기) 대면 상담 여부</th>
                         <th className="py-2.5 px-3">상태</th>
                         <th className="py-2.5 px-3 text-right">관리</th>
@@ -1501,6 +1832,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <tr key={st.id} className="hover:bg-neutral-50/70">
                             <td className="py-3 px-3 font-mono font-bold text-neutral-900 tabular-nums">{st.studentId}</td>
                             <td className="py-3 px-3 text-neutral-700">{st.name || '-'}</td>
+                            <td className="py-3 px-3 font-semibold text-neutral-700">
+                              {st.professorName || '박성우 교수'}
+                            </td>
                             <td className="py-3 px-3">
                               <button
                                 type="button"
@@ -1558,8 +1892,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
 
-        {/* TAB 6: SEMESTER SETTINGS */}
-        {activeTab === 'semester' && (
+        {/* TAB 6: SEMESTER SETTINGS (SUPER ADMIN ONLY) */}
+        {activeTab === 'semester' && isSuperAdmin && (
           <div className="space-y-6">
             <div className="bg-white rounded-2xl border border-neutral-200 p-6 max-w-2xl">
               <h2 className="text-lg font-bold text-neutral-900 mb-1">학기 및 상담 기본 설정</h2>
@@ -1635,27 +1969,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-medium text-neutral-600 mb-1">상담가능 시작시간</label>
-                    <input
-                      type="time"
+                    <label className="block font-medium text-neutral-600 mb-1">상담가능 시작시간 (00분 / 30분)</label>
+                    <TimeSelect30Min
                       value={editSemesterData.dayStart}
-                      onChange={(e) =>
-                        setEditSemesterData({ ...editSemesterData, dayStart: e.target.value })
+                      onChange={(val) =>
+                        setEditSemesterData({ ...editSemesterData, dayStart: val })
                       }
-                      className="w-full px-3 py-2 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#B70050]"
-                      required
+                      className="w-full"
                     />
                   </div>
                   <div>
-                    <label className="block font-medium text-neutral-600 mb-1">상담가능 종료시간</label>
-                    <input
-                      type="time"
+                    <label className="block font-medium text-neutral-600 mb-1">상담가능 종료시간 (00분 / 30분)</label>
+                    <TimeSelect30Min
                       value={editSemesterData.dayEnd}
-                      onChange={(e) =>
-                        setEditSemesterData({ ...editSemesterData, dayEnd: e.target.value })
+                      onChange={(val) =>
+                        setEditSemesterData({ ...editSemesterData, dayEnd: val })
                       }
-                      className="w-full px-3 py-2 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#B70050]"
-                      required
+                      className="w-full"
                     />
                   </div>
                 </div>
@@ -1689,6 +2019,270 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 7: PROFESSOR & ADMIN ACCOUNT MANAGEMENT (SUPER ADMIN ONLY) */}
+        {activeTab === 'accounts' && isSuperAdmin && (
+          <div className="space-y-6">
+            {/* Single Admin Account Card */}
+            <div className="bg-white rounded-2xl border border-neutral-200 p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] text-[11px] font-bold mb-2">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>단일 최고 관리자 계정 (1개 고정)</span>
+                  </div>
+                  <h2 className="text-lg font-bold text-neutral-900">관리자 계정 정보</h2>
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    관리자 계정은 시스템에 단 1개만 존재하며, 교수 계정을 추가·수정·삭제할 수 있는 권한을 가집니다.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminEmailInput(adminAccount?.email || userEmail || '');
+                    setShowAdminPwChange(!showAdminPwChange);
+                  }}
+                  className="px-3.5 py-2 rounded-xl border border-neutral-200 hover:border-[#B70050] hover:text-[#B70050] text-neutral-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-center"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-[#B70050]" />
+                  <span>{showAdminPwChange ? '변경 창 닫기' : '관리자 비밀번호 변경'}</span>
+                </button>
+              </div>
+
+              <div className="mt-4 p-4 rounded-xl bg-neutral-50 border border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="space-y-1">
+                  <div className="text-neutral-500">현재 등록된 유일 관리자 이메일</div>
+                  <div className="font-mono font-bold text-sm text-neutral-900">
+                    {adminAccount?.email || userEmail}
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 rounded-lg bg-[#B70050] text-white font-bold text-[11px] self-start sm:self-center">
+                  관리자 (1개 제한)
+                </span>
+              </div>
+
+              {showAdminPwChange && (
+                <form
+                  onSubmit={handleUpdateAdminAccount}
+                  className="mt-4 p-4 rounded-xl bg-[#FDF2F6]/60 border border-[#F5C2D7] space-y-3 text-xs"
+                >
+                  <h3 className="font-bold text-[#B70050]">관리자 계정 이메일 · 비밀번호 변경</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-neutral-600 mb-1">관리자 이메일</label>
+                      <input
+                        type="email"
+                        value={adminEmailInput}
+                        onChange={(e) => setAdminEmailInput(e.target.value)}
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">새 비밀번호 (4자 이상)</label>
+                      <input
+                        type="password"
+                        value={adminNewPassword}
+                        onChange={(e) => setAdminNewPassword(e.target.value)}
+                        placeholder="새 비밀번호 입력"
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPwChange(false)}
+                      className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={accountActionLoading}
+                      className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer disabled:opacity-50"
+                    >
+                      변경 저장
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            {/* Professor Accounts Management Card */}
+            <div className="bg-white rounded-2xl border border-neutral-200 p-6">
+              <div className="mb-5">
+                <h2 className="text-lg font-bold text-neutral-900">교수 계정 추가 및 관리</h2>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  관리자가 이곳에서 직접 추가한 교수 계정(이메일 · 비밀번호)으로만 교수 로그인이 가능합니다. 로그인 화면에서 임의로 계정을 생성하거나 재설정할 수 없습니다.
+                </p>
+              </div>
+
+              {/* Add Professor Form */}
+              <form
+                onSubmit={handleAddProfessorAccount}
+                className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 mb-6 space-y-3 text-xs"
+              >
+                <div className="flex items-center gap-1.5 font-bold text-neutral-800">
+                  <UserPlus className="w-4 h-4 text-[#B70050]" />
+                  <span>새 교수 계정 등록</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-neutral-600 mb-1">교수 성함 / 직함</label>
+                    <input
+                      type="text"
+                      placeholder="예: 김덕성 교수"
+                      value={newProfName}
+                      onChange={(e) => setNewProfName(e.target.value)}
+                      className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-neutral-600 mb-1">로그인 이메일</label>
+                    <input
+                      type="email"
+                      placeholder="professor@duksung.ac.kr"
+                      value={newProfEmail}
+                      onChange={(e) => setNewProfEmail(e.target.value)}
+                      className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-neutral-600 mb-1">초기 비밀번호 (4자 이상)</label>
+                    <input
+                      type="password"
+                      placeholder="••••••••"
+                      value={newProfPassword}
+                      onChange={(e) => setNewProfPassword(e.target.value)}
+                      className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={accountActionLoading}
+                    className="px-4 py-2 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>교수 계정 추가</span>
+                  </button>
+                </div>
+              </form>
+
+              {/* Edit Professor Password Modal/Box */}
+              {editingProfUid && (
+                <form
+                  onSubmit={handleSaveProfessorPassword}
+                  className="p-4 rounded-xl bg-[#FDF2F6]/60 border border-[#F5C2D7] mb-6 space-y-3 text-xs"
+                >
+                  <h3 className="font-bold text-[#B70050]">교수 계정 이름 · 비밀번호 수정</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-neutral-600 mb-1">교수 성함</label>
+                      <input
+                        type="text"
+                        value={editingProfName}
+                        onChange={(e) => setEditingProfName(e.target.value)}
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-neutral-600 mb-1">새 비밀번호 (4자 이상)</label>
+                      <input
+                        type="password"
+                        value={editingProfPassword}
+                        onChange={(e) => setEditingProfPassword(e.target.value)}
+                        placeholder="새 비밀번호 입력"
+                        className="w-full px-3 py-2 bg-white rounded-lg border border-neutral-200 focus:outline-none focus:border-[#B70050]"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingProfUid(null);
+                        setEditingProfName('');
+                        setEditingProfPassword('');
+                      }}
+                      className="px-3 py-1.5 bg-neutral-200 text-neutral-700 rounded-lg text-xs cursor-pointer"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={accountActionLoading}
+                      className="px-4 py-1.5 bg-[#B70050] hover:bg-[#960041] text-white font-bold rounded-lg text-xs cursor-pointer disabled:opacity-50"
+                    >
+                      수정 저장
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Professor Accounts Table */}
+              {professorAccounts.length === 0 ? (
+                <div className="text-center py-10 text-neutral-400 text-sm border border-dashed border-neutral-200 rounded-xl">
+                  추가된 교수 계정이 없습니다. 현재 유일한 관리자 계정만 로그인 가능합니다.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-neutral-100 text-neutral-400 uppercase tracking-wider">
+                        <th className="py-2.5 px-3">교수명</th>
+                        <th className="py-2.5 px-3">로그인 이메일</th>
+                        <th className="py-2.5 px-3">계정 구분</th>
+                        <th className="py-2.5 px-3 text-right">관리</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {professorAccounts.map((prof) => (
+                        <tr key={prof.uid} className="hover:bg-neutral-50/70">
+                          <td className="py-3 px-3 font-bold text-neutral-900">{prof.displayName}</td>
+                          <td className="py-3 px-3 font-mono text-neutral-700">{prof.email}</td>
+                          <td className="py-3 px-3">
+                            <span className="px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-700 font-semibold text-[11px]">
+                              교수 계정 (관리자 승인됨)
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right space-x-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingProfUid(prof.uid);
+                                setEditingProfName(prof.displayName);
+                                setEditingProfPassword('');
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-[11px] font-medium cursor-pointer"
+                            >
+                              비밀번호 변경
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveProfessorAccount(prof.uid, prof.email)}
+                              className="px-2.5 py-1 rounded-lg bg-[#FDF2F6] hover:bg-[#B70050] hover:text-white text-[#B70050] text-[11px] font-semibold transition-colors cursor-pointer"
+                            >
+                              삭제
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -17,6 +17,8 @@ import {
   SlotLock,
   StudentRecord,
   TimeSlotOption,
+  ProfessorAttribution,
+  ProfessorConsultationSettings,
 } from './types';
 import {
   getActiveSemester,
@@ -25,7 +27,10 @@ import {
   getPersonalSchedules,
   getStudents,
   getAdminAppointments,
+  getSlotLocks,
   getDailySlotOptions,
+  getProfessorConsultationSettingsMap,
+  resolveProfessorConsultationSettings,
 } from './lib/firestoreService';
 import { getNowSeoul } from './lib/dateUtils';
 import { seedInitialDataIfNeeded } from './lib/seedData';
@@ -51,13 +56,15 @@ import {
   Video,
   FileText,
   ExternalLink,
+  UserCheck,
+  Check,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SectionDivider } from './components/SectionDivider';
 import confetti from 'canvas-confetti';
 
 export default function App() {
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, adminAccount, professorAccounts, refreshAccounts, logout } = useAuth();
 
   // Mode state: 'student' or 'admin'
   const [viewMode, setViewMode] = useState<'student' | 'admin'>('student');
@@ -71,6 +78,96 @@ export default function App() {
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [adminAppointments, setAdminAppointments] = useState<Appointment[]>([]);
   const [slotLocks, setSlotLocks] = useState<SlotLock[]>([]);
+  const [professorSettingsMap, setProfessorSettingsMap] = useState<
+    Record<string, ProfessorConsultationSettings>
+  >({});
+
+  // Registered professors list from system accounts (e.g. 박성우 교수, 유제혁 교수, etc.)
+  const registeredProfessors = useMemo<Required<ProfessorAttribution>[]>(() => {
+    const list: Required<ProfessorAttribution>[] = [];
+    if (adminAccount) {
+      list.push({
+        professorUid: adminAccount.uid || 'admin-professor',
+        professorName:
+          adminAccount.displayName.replace(/\s*\(관리자\)\s*$/, '').trim() || '박성우 교수',
+        professorEmail: adminAccount.email.trim().toLowerCase(),
+      });
+    } else {
+      list.push({
+        professorUid: 'admin-professor',
+        professorName: '박성우 교수',
+        professorEmail: 'sungwoopark1224@gmail.com',
+      });
+    }
+
+    for (const prof of professorAccounts) {
+      const cleanName = prof.displayName.replace(/\s*\(관리자\)\s*$/, '').trim() || '교수';
+      const cleanEmail = prof.email.trim().toLowerCase();
+      if (
+        !list.some(
+          (item) => item.professorEmail === cleanEmail || item.professorUid === prof.uid
+        )
+      ) {
+        list.push({
+          professorUid: prof.uid,
+          professorName: cleanName,
+          professorEmail: cleanEmail,
+        });
+      }
+    }
+    return list;
+  }, [adminAccount, professorAccounts]);
+
+  const [selectedProfessorUid, setSelectedProfessorUid] = useState<string>('admin-professor');
+
+  const selectedProfessor = useMemo<Required<ProfessorAttribution>>(() => {
+    return (
+      registeredProfessors.find((p) => p.professorUid === selectedProfessorUid) ||
+      registeredProfessors[0]
+    );
+  }, [registeredProfessors, selectedProfessorUid]);
+
+  const selectedProfessorSettings = useMemo<ProfessorConsultationSettings>(() => {
+    return resolveProfessorConsultationSettings(
+      selectedProfessor,
+      professorSettingsMap,
+      semester?.googleFormUrl || ''
+    );
+  }, [selectedProfessor, professorSettingsMap, semester?.googleFormUrl]);
+
+  // Filter classSchedules and slotLocks for the currently selected advisor professor
+  const matchesSelectedProfessor = useCallback(
+    (rec: { professorUid?: string; professorEmail?: string; professorName?: string }) => {
+      const recEmail = (rec.professorEmail || '').trim().toLowerCase();
+      const recUid = (rec.professorUid || '').trim();
+      const recName = (rec.professorName || '').replace(/\s*\(관리자\)\s*$/, '').trim();
+
+      if (recEmail && selectedProfessor.professorEmail) {
+        return recEmail === selectedProfessor.professorEmail.toLowerCase();
+      }
+      if (recUid && selectedProfessor.professorUid) {
+        return recUid === selectedProfessor.professorUid;
+      }
+      if (recName && selectedProfessor.professorName) {
+        return recName === selectedProfessor.professorName;
+      }
+      return (
+        selectedProfessor.professorUid === 'admin-professor' ||
+        selectedProfessor.professorEmail === 'sungwoopark1224@gmail.com'
+      );
+    },
+    [selectedProfessor]
+  );
+
+  const selectedProfClassSchedules = useMemo(
+    () => classSchedules.filter(matchesSelectedProfessor),
+    [classSchedules, matchesSelectedProfessor]
+  );
+
+  const selectedProfSlotLocks = useMemo(
+    () => slotLocks.filter(matchesSelectedProfessor),
+    [slotLocks, matchesSelectedProfessor]
+  );
 
   // Student flow state — initialized to today's date in Asia/Seoul
   const [currentMonth, setCurrentMonth] = useState<Date>(() => {
@@ -88,15 +185,23 @@ export default function App() {
   const refreshData = useCallback(async () => {
     try {
       await seedInitialDataIfNeeded();
+      await refreshAccounts();
       const activeSem = await getActiveSemester();
       setSemester(activeSem);
 
       const semList = await getAllSemesters();
       setAllSemesters(semList);
 
+      const profMap = await getProfessorConsultationSettingsMap(activeSem?.googleFormUrl || '');
+      setProfessorSettingsMap(profMap);
+
       if (activeSem) {
-        const clsList = await getClassSchedules(activeSem.id);
+        const [clsList, locksList] = await Promise.all([
+          getClassSchedules(activeSem.id),
+          getSlotLocks(activeSem.id),
+        ]);
         setClassSchedules(clsList);
+        setSlotLocks(locksList);
 
         if (isAdmin) {
           const [persList, studList, aptList] = await Promise.all([
@@ -118,7 +223,7 @@ export default function App() {
     } finally {
       setInitialLoading(false);
     }
-  }, [isAdmin]);
+  }, [isAdmin, refreshAccounts]);
 
   useEffect(() => {
     refreshData();
@@ -142,8 +247,10 @@ export default function App() {
   }, [semester?.id, semester?.startDate, semester?.endDate]);
 
   // Load admin-only datasets when authenticated as admin
+  const activeSemesterId = semester?.id;
+
   useEffect(() => {
-    if (!isAdmin || !semester) {
+    if (!isAdmin || !activeSemesterId) {
       setPersonalSchedules([]);
       setStudents([]);
       setAdminAppointments([]);
@@ -152,9 +259,9 @@ export default function App() {
 
     let isMounted = true;
     Promise.all([
-      getPersonalSchedules(semester.id),
-      getStudents(semester.id),
-      getAdminAppointments(semester.id),
+      getPersonalSchedules(activeSemesterId),
+      getStudents(activeSemesterId),
+      getAdminAppointments(activeSemesterId),
     ])
       .then(([persList, studList, aptList]) => {
         if (isMounted) {
@@ -170,39 +277,91 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [isAdmin, semester]);
+  }, [isAdmin, activeSemesterId]);
 
-  // 2. Real-time Listener for SlotLocks
-  // Crucial: Allows other students viewing simultaneously to see slots update without exposing names or phone numbers!
+  // 2. Real-time Listener & Auto-Refresh for SlotLocks and Schedules
+  // Crucial: Ensures deleting/adding class schedules or personal schedules immediately updates student calendar & slots!
   useEffect(() => {
-    if (!semester) return;
+    if (!activeSemesterId) return;
+
+    const syncPublicScheduleData = () => {
+      Promise.all([
+        getClassSchedules(activeSemesterId),
+        getSlotLocks(activeSemesterId),
+        getProfessorConsultationSettingsMap(semester?.googleFormUrl || ''),
+      ])
+        .then(([clsList, locksList, profMap]) => {
+          setClassSchedules(clsList);
+          setSlotLocks(locksList);
+          setProfessorSettingsMap(profMap);
+        })
+        .catch(() => {});
+    };
+
+    const handleWindowFocus = () => {
+      syncPublicScheduleData();
+    };
+    window.addEventListener('focus', handleWindowFocus);
 
     if (isSupabaseConfigured && supabase) {
-      sbGetSlotLocks(semester.id).then(setSlotLocks);
       const channel = supabase
-        .channel(`slot_locks_${semester.id}`)
+        .channel(`public_schedules_${activeSemesterId}`)
         .on(
           'postgres_changes',
           {
             event: '*',
             schema: 'public',
             table: 'slot_locks',
-            filter: `semester_id=eq.${semester.id}`,
           },
-          () => {
-            sbGetSlotLocks(semester.id).then(setSlotLocks);
-          }
+          () => syncPublicScheduleData()
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'class_schedules',
+          },
+          () => syncPublicScheduleData()
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'personal_schedules',
+          },
+          () => syncPublicScheduleData()
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'appointments',
+          },
+          () => syncPublicScheduleData()
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'admin_users',
+          },
+          () => syncPublicScheduleData()
         )
         .subscribe();
 
       return () => {
+        window.removeEventListener('focus', handleWindowFocus);
         supabase.removeChannel(channel);
       };
     }
 
     const q = query(
       collection(db, 'slotLocks'),
-      where('semesterId', '==', semester.id)
+      where('semesterId', '==', activeSemesterId)
     );
 
     const unsubscribe = onSnapshot(
@@ -219,27 +378,29 @@ export default function App() {
       }
     );
 
-    return () => unsubscribe();
-  }, [semester]);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+      unsubscribe();
+    };
+  }, [activeSemesterId]);
 
   // 3. Real-time Listener for Appointments (if admin)
   useEffect(() => {
-    if (!isAdmin || !semester) return;
+    if (!isAdmin || !activeSemesterId) return;
 
     if (isSupabaseConfigured && supabase) {
-      sbGetAdminAppointments(semester.id).then(setAdminAppointments);
       const channel = supabase
-        .channel(`appointments_${semester.id}`)
+        .channel(`appointments_${activeSemesterId}`)
         .on(
           'postgres_changes',
           {
             event: '*',
             schema: 'public',
             table: 'appointments',
-            filter: `semester_id=eq.${semester.id}`,
+            filter: `semester_id=eq.${activeSemesterId}`,
           },
           () => {
-            sbGetAdminAppointments(semester.id).then(setAdminAppointments);
+            sbGetAdminAppointments(activeSemesterId).then(setAdminAppointments);
           }
         )
         .subscribe();
@@ -251,7 +412,7 @@ export default function App() {
 
     const q = query(
       collection(db, 'appointments'),
-      where('semesterId', '==', semester.id)
+      where('semesterId', '==', activeSemesterId)
     );
 
     const unsubscribe = onSnapshot(
@@ -269,31 +430,41 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [isAdmin, semester]);
+  }, [isAdmin, activeSemesterId]);
 
-  // 4. Calculate Daily Slot Availability when date, locks, or classes change
+  // 4. Calculate Daily Slot Availability when date, locks, classes, or selected professor change
   useEffect(() => {
     if (!semester || !selectedDate) {
       setDailySlots([]);
       return;
     }
 
-    setLoadingSlots(true);
-    getDailySlotOptions(semester, selectedDate, classSchedules, slotLocks)
+    let isCancelled = false;
+    getDailySlotOptions(semester, selectedDate, selectedProfClassSchedules, selectedProfSlotLocks)
       .then((slots) => {
-        setDailySlots(slots);
+        if (!isCancelled) {
+          setDailySlots(slots);
+          setLoadingSlots(false);
+        }
       })
       .catch((err) => {
         console.error('Error calculating slots:', err);
-      })
-      .finally(() => {
-        setLoadingSlots(false);
+        if (!isCancelled) {
+          setLoadingSlots(false);
+        }
       });
-  }, [selectedDate, semester, classSchedules, slotLocks]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedDate, semester, selectedProfClassSchedules, selectedProfSlotLocks]);
 
   // 5. Booking Success Event
   const handleBookingSuccess = (appointment: Appointment) => {
     setSuccessAppointment(appointment);
+    if (semester?.id) {
+      getSlotLocks(semester.id).then(setSlotLocks).catch(() => {});
+    }
     try {
       confetti({
         particleCount: 70,
@@ -352,10 +523,12 @@ export default function App() {
         classSchedules={classSchedules}
         personalSchedules={personalSchedules}
         students={students}
+        professorSettingsMap={professorSettingsMap}
         onRefresh={refreshData}
         onLogout={async () => {
           await logout();
           setViewMode('student');
+          await refreshData();
         }}
         userEmail={user.email || undefined}
       />
@@ -374,7 +547,7 @@ export default function App() {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-base sm:text-lg font-bold text-neutral-900 tracking-tight truncate">
-                  학기별 상담 신청 플랫폼
+                  학기별 정기상담 신청 플랫폼
                 </span>
                 {semester && (
                   <span className="text-xs font-semibold text-[#B70050] hidden sm:inline">
@@ -383,7 +556,7 @@ export default function App() {
                 )}
               </div>
               <p className="text-xs text-neutral-500 font-medium truncate">
-                데이터사이언스학과 박성우 교수
+                덕성여자대학교 데이터사이언스학과
               </p>
             </div>
           </div>
@@ -442,7 +615,7 @@ export default function App() {
                 </h2>
               </div>
               <p className="text-xs sm:text-sm text-neutral-600 mt-1 leading-relaxed">
-                달력에서 희망하는 날짜를 선택한 후 상담 시작 시간을 선택해 신청해주세요. 본 학기에 지도교수로 박성우 교수로 배정된 학생들만 신청 가능합니다. 만약, 학기별 정기 상담과는 별도로 상담을 신청하고 싶은 학생들은 직접 이야기를 하거나 메일로 신청을 하기 바랍니다.
+                달력에서 희망하는 날짜를 선택한 후 상담 시작 시간을 선택해 신청해주세요. 해당 학기에 지도교수로 배정된 교수님에게만 신청 가능합니다. 만약, 학기별 정기 상담과는 별도로 상담을 신청하고 싶은 학생들은 직접 이야기를 하거나 메일로 신청을 하기 바랍니다.
               </p>
             </div>
           </div>
@@ -468,17 +641,25 @@ export default function App() {
           className="mb-8 bg-[#FDF2F6]/70 border border-[#F5C2D7] rounded-2xl p-5 sm:p-6 relative overflow-hidden"
         >
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div className="space-y-2">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#B70050] text-white text-xs font-bold">
-                <AlertCircle className="w-3.5 h-3.5" />
-                <span>필독 유의사항 · 대면 및 비대면 상담 운영 안내</span>
+            <div className="space-y-2.5">
+              <div className="flex items-center flex-wrap gap-2">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#B70050] text-white text-xs font-bold">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>박성우 교수 지도학생 전용 안내</span>
+                </div>
+                <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-white border border-[#F5C2D7] text-[#B70050] text-xs font-bold">
+                  필독 유의사항 · 대면 및 비대면 상담 운영 안내
+                </span>
               </div>
               <h4 className="text-base sm:text-lg font-bold text-neutral-900">
-                학기별 상담 유형(대면·비대면) 선택 기준 및 사전 구글폼 작성 안내
+                [박성우 교수] 학기별 상담 유형(대면·비대면) 선택 기준 및 사전 구글폼 작성 안내
               </h4>
+              <p className="text-xs sm:text-sm font-semibold text-[#B70050] bg-white/80 px-3 py-2 rounded-xl border border-[#F5C2D7]">
+                ※ 아래의 대면·비대면 선택 기준 및 사전 구글폼 작성 안내는 <strong>박성우 교수님 지도학생에게 해당되는 운영 기준</strong>입니다.
+              </p>
               <ul className="space-y-1.5 text-xs sm:text-sm text-neutral-700 leading-relaxed list-disc list-inside">
                 <li>
-                  <strong className="font-bold text-neutral-900">학기별 운영 원칙:</strong> 1학기 정기 상담은 <strong className="font-bold text-[#B70050]">전원 대면 상담</strong>으로 진행하며, 2학기에는 <strong className="font-bold text-[#B70050]">1학기에 대면으로 상담을 진행한 학생에 한하여 비대면 상담 신청이 가능</strong>합니다.
+                  <strong className="font-bold text-neutral-900">학기별 운영 원칙 (박성우 교수):</strong> 1학기 정기 상담은 <strong className="font-bold text-[#B70050]">전원 대면 상담</strong>으로 진행하며, 2학기에는 <strong className="font-bold text-[#B70050]">1학기에 대면으로 상담을 진행한 학생에 한하여 비대면 상담 신청이 가능</strong>합니다.
                 </li>
                 <li>
                   <strong className="font-bold text-neutral-900">지도교수 변경 학생 주의사항:</strong> 1학기에 박성우 교수가 아닌 다른 교수님께 지도교수 배정을 받고 <strong className="font-bold text-[#B70050]">2학기에 박성우 교수가 지도교수로 배정된 학생은 반드시 대면으로 진행</strong>해야 합니다.
@@ -492,20 +673,20 @@ export default function App() {
               </ul>
             </div>
 
-            {semester?.googleFormUrl && (
+            {selectedProfessorSettings.onlineEnabled && selectedProfessorSettings.googleFormUrl && (
               <div className="shrink-0 flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-[#F5C2D7]">
                 <a
-                  href={semester.googleFormUrl}
+                  href={selectedProfessorSettings.googleFormUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-4 py-3 bg-[#B70050] hover:bg-[#960041] text-white text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-xs whitespace-nowrap"
                 >
                   <FileText className="w-4 h-4" />
-                  <span>비대면 상담 구글폼 작성하기</span>
+                  <span>{selectedProfessor.professorName} 비대면 구글폼 작성하기</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
                 <span className="text-[11px] text-[#B70050] font-medium text-center lg:text-right">
-                  ※ 비대면 상담 신청 시 상담 전 필수 제출
+                  ※ {selectedProfessor.professorName} 비대면 상담 신청 시 상담 전 필수 제출
                 </span>
               </div>
             )}
@@ -533,13 +714,122 @@ export default function App() {
           </motion.div>
         ) : (
           <>
+            {/* Advisor Professor Selection Section (Above Booking Section) */}
+            <div id="professor-select-section" className="mb-8">
+              <div className="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-1 bg-[#B70050]" />
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7] flex items-center justify-center shrink-0">
+                      <UserCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7]">
+                          STEP 00
+                        </span>
+                        <h3 className="text-base sm:text-lg font-bold text-neutral-900">
+                          지도교수 선택
+                        </h3>
+                      </div>
+                      <p className="text-xs sm:text-sm text-neutral-500 mt-0.5">
+                        본인의 지도교수님을 선택하면 아래 캘린더와 시간표가 해당 교수님의 상담 가능 일정으로 활성화됩니다.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="px-3.5 py-1.5 rounded-xl bg-[#FDF2F6] border border-[#F5C2D7] text-xs font-bold text-[#B70050] self-start sm:self-center shrink-0">
+                    선택된 지도교수: {selectedProfessor.professorName}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {registeredProfessors.map((prof) => {
+                    const isSelected = prof.professorUid === selectedProfessor.professorUid;
+                    const profConfig = resolveProfessorConsultationSettings(
+                      prof,
+                      professorSettingsMap,
+                      semester?.googleFormUrl || ''
+                    );
+                    return (
+                      <button
+                        key={prof.professorUid}
+                        id={`btn-select-prof-${prof.professorUid}`}
+                        type="button"
+                        onClick={() => setSelectedProfessorUid(prof.professorUid)}
+                        className={`p-4 rounded-xl border text-left transition-all flex items-center justify-between gap-3 cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#B70050] border-[#B70050] text-white shadow-sm ring-2 ring-[#B70050]/20'
+                            : 'bg-white border-neutral-200 hover:border-[#B70050] hover:bg-[#FDF2F6]/50 text-neutral-900'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 font-bold text-sm ${
+                              isSelected
+                                ? 'bg-white/20 text-white'
+                                : 'bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7]'
+                            }`}
+                          >
+                            <GraduationCap className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`text-sm sm:text-base font-bold truncate ${
+                                  isSelected ? 'text-white' : 'text-neutral-900'
+                                }`}
+                              >
+                                {prof.professorName}
+                              </span>
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                                  isSelected
+                                    ? 'bg-white/20 text-white'
+                                    : profConfig.onlineEnabled && semester?.semester !== 1
+                                    ? 'bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7]'
+                                    : 'bg-neutral-100 text-neutral-600'
+                                }`}
+                              >
+                                {profConfig.onlineEnabled && semester?.semester !== 1
+                                  ? '대면 · 비대면'
+                                  : '대면 전용'}
+                              </span>
+                            </div>
+                            <div
+                              className={`text-[11px] truncate mt-0.5 ${
+                                isSelected ? 'text-white/85 font-medium' : 'text-neutral-500'
+                              }`}
+                            >
+                              {isSelected
+                                ? '현재 선택됨 · 상담 가능 일정 조회 중'
+                                : '클릭하여 상담 가능 일정 보기'}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
+                          className={`w-6 h-6 rounded-full border flex items-center justify-center shrink-0 ${
+                            isSelected
+                              ? 'border-white bg-white text-[#B70050]'
+                              : 'border-neutral-300 bg-white text-transparent'
+                          }`}
+                        >
+                          <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
             {/* Section Divider: Main Booking Grid */}
             <div id="booking-section" className="scroll-mt-20">
               <SectionDivider
                 title="상담 날짜 및 시간 신청"
-                description="좌측 캘린더에서 희망 일자를 선택한 후 우측에서 상담 시작 시간을 선택해 신청을 진행하세요."
+                description={`선택하신 [${selectedProfessor.professorName}]의 상담 가능 일정을 기준으로 희망 일자와 시작 시간을 선택해 신청을 진행하세요.`}
                 icon={<Calendar className="w-6 h-6 text-[#B70050]" />}
-                badge="실시간 확정"
+                badge={`${selectedProfessor.professorName} 일정`}
                 step="STEP 01 & 02"
                 className="mt-2 mb-6"
               />
@@ -554,7 +844,8 @@ export default function App() {
                     selectedDate={selectedDate}
                     onSelectDate={setSelectedDate}
                     semester={semester}
-                    slotLocks={slotLocks}
+                    slotLocks={selectedProfSlotLocks}
+                    classSchedules={selectedProfClassSchedules}
                   />
                 </div>
 
@@ -565,6 +856,8 @@ export default function App() {
                     timeSlots={dailySlots}
                     semester={semester}
                     loadingSlots={loadingSlots}
+                    selectedProfessor={selectedProfessor}
+                    professorConsultationSettings={selectedProfessorSettings}
                     onBookingSuccess={handleBookingSuccess}
                   />
                 </div>
@@ -594,9 +887,9 @@ export default function App() {
                   <div className="w-11 h-11 rounded-xl bg-[#FDF2F6] text-[#B70050] border border-[#F5C2D7]/60 flex items-center justify-center mb-4 group-hover:bg-[#B70050] group-hover:text-white transition-colors">
                     <Clock className="w-5 h-5 stroke-[1.8]" />
                   </div>
-                  <h4 className="text-base font-bold text-neutral-900 mb-2">상담 시간 준수 (60분 이내)</h4>
+                  <h4 className="text-base font-bold text-neutral-900 mb-2">상담 시간 준수 (30~60분 이내)</h4>
                   <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed">
-                    상담은 1인당 30~60분 이내로 진행됩니다. 다음 학생의 상담 일정에 지장이 없도록 반드시 신청 시간에 맞추어 참여해주세요.
+                    상담은 1인당 30~60분 이내로 진행되며, <strong className="font-semibold text-neutral-800">상담 진행 시간은 교수님별로 상이할 수 있습니다.</strong> 다음 학생의 상담 일정에 지장이 없도록 <strong className="font-semibold text-[#B70050]">반드시 신청 시간에 맞추어 상담 장소로 방문</strong>해주세요.
                   </p>
                 </motion.div>
 
@@ -611,9 +904,19 @@ export default function App() {
                     <MapPin className="w-5 h-5 stroke-[1.8]" />
                   </div>
                   <h4 className="text-base font-bold text-neutral-900 mb-2">연구실 위치 및 방문</h4>
-                  <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed">
-                    대면 상담의 경우 차미리사관 130호 박성우 교수 개인 연구실에서 진행합니다.
-                  </p>
+                  <div className="text-xs sm:text-sm text-neutral-600 leading-relaxed space-y-1.5">
+                    <p>대면 상담은 각 지도교수님의 개인 연구실에서 진행합니다.</p>
+                    <ul className="space-y-1 font-medium text-neutral-800 bg-neutral-50 p-2.5 rounded-xl border border-neutral-200/70">
+                      <li className="flex items-center justify-between">
+                        <span>박성우 교수</span>
+                        <span className="font-bold text-[#B70050]">차미리사관 130호</span>
+                      </li>
+                      <li className="flex items-center justify-between">
+                        <span>유제혁 교수</span>
+                        <span className="font-bold text-[#B70050]">차미리사관 348호</span>
+                      </li>
+                    </ul>
+                  </div>
                 </motion.div>
 
                 <motion.div
@@ -628,7 +931,7 @@ export default function App() {
                   </div>
                   <h4 className="text-base font-bold text-neutral-900 mb-2">비대면 상담 및 구글폼</h4>
                   <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed">
-                    올해 대면 상담을 진행한 학생만 2학기에 비대면 신청이 가능하며, 비대면 신청 시 반드시 사전 구글폼을 작성해야 합니다.
+                    비대면 상담 및 구글폼 작성은 <strong className="font-semibold text-[#B70050]">현재 박성우 교수님만 진행</strong>하고 있습니다. 올해 대면 상담을 진행한 학생만 2학기에 비대면 신청이 가능하며, 비대면 신청 시 반드시 사전 구글폼을 작성해야 합니다.
                   </p>
                 </motion.div>
 
@@ -656,9 +959,9 @@ export default function App() {
       {/* Footer */}
       <footer className="bg-white border-t border-neutral-200 mt-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col sm:flex-row items-center justify-between text-xs text-neutral-400 gap-3">
-          <p>© 2026 데이터사이언스학과 박성우 교수 연구실 · 학기별 상담 신청 플랫폼</p>
+          <p>© 2026 덕성여자대학교 데이터사이언스학과 · 학기별 정기상담 신청 플랫폼</p>
           <div className="flex items-center gap-3">
-            <span>차미리사관 130호</span>
+            <span>박성우 교수(차미리사관 130호) · 유제혁 교수(차미리사관 348호)</span>
             <span aria-hidden="true">·</span>
             <span>Asia/Seoul (UTC+9)</span>
           </div>
@@ -670,7 +973,13 @@ export default function App() {
         {successAppointment && (
           <BookingSuccessModal
             appointment={successAppointment}
-            googleFormUrl={semester?.googleFormUrl}
+            googleFormUrl={
+              resolveProfessorConsultationSettings(
+                successAppointment,
+                professorSettingsMap,
+                semester?.googleFormUrl || ''
+              ).googleFormUrl
+            }
             onClose={() => setSuccessAppointment(null)}
           />
         )}

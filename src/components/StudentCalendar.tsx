@@ -1,8 +1,19 @@
 import React, { useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { SemesterSettings, SlotLock } from '../types';
-import { isDateInRange, isPastDate, pad2, getDayOfWeek, getNowSeoul, getKoreanHoliday } from '../lib/dateUtils';
+import { SemesterSettings, SlotLock, ClassSchedule } from '../types';
+import {
+  isDateInRange,
+  isPastDate,
+  pad2,
+  getDayOfWeek,
+  getWeekdayNameEn,
+  getNowSeoul,
+  getKoreanHoliday,
+  generateEligibleAppointmentStarts,
+  getAppointmentSubSlots,
+  hasTimeOverlap,
+} from '../lib/dateUtils';
 
 interface StudentCalendarProps {
   currentMonth: Date; // 1st of display month
@@ -11,6 +22,7 @@ interface StudentCalendarProps {
   onSelectDate: (date: string) => void;
   semester: SemesterSettings;
   slotLocks: SlotLock[];
+  classSchedules?: ClassSchedule[];
 }
 
 export const StudentCalendar: React.FC<StudentCalendarProps> = ({
@@ -20,6 +32,7 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
   onSelectDate,
   semester,
   slotLocks,
+  classSchedules = [],
 }) => {
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth(); // 0-indexed
@@ -60,6 +73,12 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
   const firstDayIndex = new Date(year, month, 1).getDay(); // 0: Sun, 1: Mon...
 
   const calendarDays = useMemo(() => {
+    const eligibleStartSlots = generateEligibleAppointmentStarts(
+      semester.dayStart || '09:00',
+      semester.dayEnd || '18:00',
+      semester.appointmentMinutes || 60
+    );
+
     const days: Array<{
       dateStr: string;
       dayNum: number;
@@ -71,6 +90,7 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
       isHoliday: boolean;
       holidayName?: string;
       lockedCount: number;
+      availableSlotCount: number;
     }> = [];
 
     // Empty lead cells
@@ -86,6 +106,7 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
         isHoliday: false,
         holidayName: undefined,
         lockedCount: 0,
+        availableSlotCount: 0,
       });
     }
 
@@ -95,12 +116,32 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
       const inRange = isDateInRange(dateStr, semester.startDate, semester.endDate);
       const isPast = isPastDate(dateStr);
       const dayOfWeek = getDayOfWeek(dateStr);
+      const weekdayName = getWeekdayNameEn(dayOfWeek);
       const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
       const holidayInfo = getKoreanHoliday(dateStr);
       const isHoliday = holidayInfo.isHoliday;
       const holidayName = holidayInfo.name;
 
-      const locks = slotLocks.filter((l) => l.date === dateStr).length;
+      const dayLocks = slotLocks.filter((l) => l.date === dateStr);
+      const locked30MinTimes = new Set(dayLocks.map((l) => l.time));
+      const activeClasses = classSchedules.filter(
+        (cs) => cs.weekday === weekdayName && isDateInRange(dateStr, cs.startDate, cs.endDate)
+      );
+
+      let availableSlotCount = 0;
+      if (inRange && !isPast && !isWeekend && !isHoliday) {
+        for (const startTime of eligibleStartSlots) {
+          const { subSlots, endTime } = getAppointmentSubSlots(startTime, 60);
+          const hasLock = subSlots.some((sub) => locked30MinTimes.has(sub));
+          if (hasLock) continue;
+          const hasClass = activeClasses.some((cls) =>
+            hasTimeOverlap(startTime, endTime, cls.startTime, cls.endTime)
+          );
+          if (!hasClass) {
+            availableSlotCount++;
+          }
+        }
+      }
 
       days.push({
         dateStr,
@@ -112,12 +153,13 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
         isWeekend,
         isHoliday,
         holidayName,
-        lockedCount: locks,
+        lockedCount: dayLocks.length,
+        availableSlotCount,
       });
     }
 
     return days;
-  }, [year, month, daysInMonth, firstDayIndex, semester, todayStr, slotLocks]);
+  }, [year, month, daysInMonth, firstDayIndex, semester, todayStr, slotLocks, classSchedules]);
 
   return (
     <motion.div
@@ -205,7 +247,8 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
               return <div key={`empty-${idx}`} className="h-12 sm:h-15" />;
             }
 
-            const isSelectable = item.isInSemester && !item.isPast && !item.isWeekend && !item.isHoliday;
+            const isWeekdayOpen = item.isInSemester && !item.isPast && !item.isWeekend && !item.isHoliday;
+            const isSelectable = isWeekdayOpen && item.availableSlotCount > 0;
             const isSelected = item.dateStr === selectedDate;
 
             let btnClass =
@@ -304,6 +347,10 @@ export const StudentCalendar: React.FC<StudentCalendarProps> = ({
                       신청가능
                     </span>
                   </div>
+                ) : isWeekdayOpen && item.availableSlotCount === 0 ? (
+                  <span className="text-[9px] sm:text-[10px] text-neutral-400 hidden md:inline">
+                    일정마감
+                  </span>
                 ) : null}
               </button>
             );

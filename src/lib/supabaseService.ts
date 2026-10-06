@@ -6,6 +6,8 @@ import {
   Appointment,
   SlotLock,
   StudentRecord,
+  ProfessorAttribution,
+  ProfessorConsultationSettings,
 } from '../types';
 import {
   generate30MinSlots,
@@ -21,7 +23,151 @@ import {
 } from './dateUtils';
 import type { BookingRequest, BookingResult } from './firestoreService';
 
-const DEFAULT_SEMESTER_ID = '2026-2';
+const DEFAULT_PROFESSOR: Required<ProfessorAttribution> = {
+  professorUid: 'admin-professor',
+  professorName: '박성우 교수',
+  professorEmail: 'sungwoopark1224@gmail.com',
+};
+
+const OWNERSHIP_META_UID = 'meta:professor_ownership';
+const PROF_SETTINGS_META_UID = 'meta:professor_settings';
+const LOCAL_PROF_SETTINGS_KEY = 'ds_counseling_prof_settings_map';
+let cachedOwnershipMap: Record<string, Required<ProfessorAttribution>> = {};
+let cachedProfSettingsMap: Record<string, ProfessorConsultationSettings> = {};
+let lastOwnershipFetchMs = 0;
+let inflightOwnershipPromise: Promise<Record<string, Required<ProfessorAttribution>>> | null = null;
+
+/**
+ * Resolves the currently logged-in professor/admin attribution from session or override.
+ * Defaults to 박성우 교수 (sungwoopark1224@gmail.com).
+ */
+export function getCurrentProfessorAttribution(
+  override?: ProfessorAttribution
+): Required<ProfessorAttribution> {
+  if (override?.professorName && override?.professorEmail) {
+    return {
+      professorUid: override.professorUid || DEFAULT_PROFESSOR.professorUid,
+      professorName:
+        override.professorName.replace(/\s*\(관리자\)\s*$/, '').trim() ||
+        DEFAULT_PROFESSOR.professorName,
+      professorEmail: override.professorEmail.trim().toLowerCase(),
+    };
+  }
+
+  try {
+    const raw = localStorage.getItem('ds_counseling_admin_session');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.email) {
+        const cleanName = String(parsed.displayName || DEFAULT_PROFESSOR.professorName)
+          .replace(/\s*\(관리자\)\s*$/, '')
+          .trim();
+        return {
+          professorUid: String(parsed.uid || DEFAULT_PROFESSOR.professorUid),
+          professorName: cleanName || DEFAULT_PROFESSOR.professorName,
+          professorEmail: String(parsed.email).trim().toLowerCase(),
+        };
+      }
+    }
+  } catch {
+    // Ignore storage error
+  }
+
+  return { ...DEFAULT_PROFESSOR };
+}
+
+async function loadOwnershipMapFromSupabase(
+  force = false
+): Promise<Record<string, Required<ProfessorAttribution>>> {
+  if (!supabase) return cachedOwnershipMap;
+  const now = Date.now();
+  if (!force && lastOwnershipFetchMs > 0 && now - lastOwnershipFetchMs < 15000) {
+    return cachedOwnershipMap;
+  }
+  if (inflightOwnershipPromise) {
+    return inflightOwnershipPromise;
+  }
+
+  inflightOwnershipPromise = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('admin_users')
+        .select('name')
+        .eq('uid', OWNERSHIP_META_UID)
+        .maybeSingle();
+
+      if (!error && data?.name) {
+        const parsed = JSON.parse(data.name);
+        if (parsed && typeof parsed === 'object') {
+          cachedOwnershipMap = { ...cachedOwnershipMap, ...parsed };
+        }
+      }
+      lastOwnershipFetchMs = Date.now();
+    } catch {
+      // Ignore
+    } finally {
+      inflightOwnershipPromise = null;
+    }
+    return cachedOwnershipMap;
+  })();
+
+  return inflightOwnershipPromise;
+}
+
+async function saveOwnershipForRecord(
+  tableKey: string,
+  recordId: string,
+  prof: Required<ProfessorAttribution>
+): Promise<void> {
+  return saveOwnershipForRecords(tableKey, [recordId], prof);
+}
+
+async function saveOwnershipForRecords(
+  tableKey: string,
+  recordIds: string[],
+  prof: Required<ProfessorAttribution>
+): Promise<void> {
+  if (recordIds.length === 0) return;
+  for (const id of recordIds) {
+    cachedOwnershipMap[`${tableKey}:${id}`] = prof;
+  }
+  if (!supabase) return;
+  try {
+    const current = await loadOwnershipMapFromSupabase();
+    const merged: Record<string, Required<ProfessorAttribution>> = { ...current };
+    for (const id of recordIds) {
+      merged[`${tableKey}:${id}`] = prof;
+    }
+    cachedOwnershipMap = merged;
+    await supabase.from('admin_users').upsert({
+      uid: OWNERSHIP_META_UID,
+      email: 'meta@system.local',
+      name: JSON.stringify(merged),
+      role: 'meta',
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+function resolveRowProfessor(
+  tableKey: string,
+  recordId: string,
+  row: any
+): Required<ProfessorAttribution> {
+  if (row?.professor_name) {
+    return {
+      professorUid: row.professor_uid || DEFAULT_PROFESSOR.professorUid,
+      professorName: row.professor_name,
+      professorEmail: row.professor_email || DEFAULT_PROFESSOR.professorEmail,
+    };
+  }
+  const fromMeta = cachedOwnershipMap[`${tableKey}:${recordId}`];
+  if (fromMeta) {
+    return fromMeta;
+  }
+  return { ...DEFAULT_PROFESSOR };
+}
 
 // ----------------------------------------------------
 // Row Mappers (snake_case DB <-> camelCase App)
@@ -34,6 +180,7 @@ function mapSemesterRow(row: any): SemesterSettings {
   } catch {
     // Ignore
   }
+  const prof = resolveRowProfessor('semester_settings', row.id, row);
   return {
     id: row.id,
     year: Number(row.year),
@@ -48,12 +195,16 @@ function mapSemesterRow(row: any): SemesterSettings {
     appointmentMinutes: Number(row.appointment_minutes || 60),
     googleFormUrl: row.google_form_url || cachedUrl || '',
     active: Boolean(row.active),
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 function mapClassRow(row: any): ClassSchedule {
+  const prof = resolveRowProfessor('class_schedules', row.id, row);
   return {
     id: row.id,
     semesterId: row.semester_id,
@@ -63,11 +214,15 @@ function mapClassRow(row: any): ClassSchedule {
     endTime: row.end_time,
     startDate: row.start_date,
     endDate: row.end_date,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
   };
 }
 
 function mapPersonalRow(row: any): PersonalSchedule {
+  const prof = resolveRowProfessor('personal_schedules', row.id, row);
   return {
     id: row.id,
     semesterId: row.semester_id,
@@ -76,11 +231,26 @@ function mapPersonalRow(row: any): PersonalSchedule {
     date: row.date,
     startTime: row.start_time,
     endTime: row.end_time,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
   };
 }
 
 function mapSlotLockRow(row: any): SlotLock {
+  const prof = resolveRowProfessor('slot_locks', row.id, row);
+  let resolvedUid = prof.professorUid;
+  if (
+    (!row?.professor_uid || resolvedUid === DEFAULT_PROFESSOR.professorUid) &&
+    typeof row?.id === 'string' &&
+    row.id.startsWith('prof-')
+  ) {
+    const underscoreIdx = row.id.indexOf('_');
+    if (underscoreIdx > 5) {
+      resolvedUid = row.id.slice(0, underscoreIdx);
+    }
+  }
   return {
     id: row.id,
     slotKey: row.slot_key,
@@ -89,11 +259,15 @@ function mapSlotLockRow(row: any): SlotLock {
     type: row.type,
     semesterId: row.semester_id,
     referenceId: row.reference_id || undefined,
+    professorUid: resolvedUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
   };
 }
 
 function mapStudentRow(row: any): StudentRecord {
+  const prof = resolveRowProfessor('students', row.id, row);
   return {
     id: row.id,
     semesterId: row.semester_id,
@@ -101,11 +275,15 @@ function mapStudentRow(row: any): StudentRecord {
     name: row.name || '',
     active: Boolean(row.active),
     firstSemesterInPerson: row.first_semester_in_person ?? true,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
   };
 }
 
 function mapAppointmentRow(row: any): Appointment {
+  const prof = resolveRowProfessor('appointments', row.appointment_id, row);
   return {
     appointmentId: row.appointment_id,
     semesterId: row.semester_id,
@@ -123,6 +301,9 @@ function mapAppointmentRow(row: any): Appointment {
     cancellationReason: row.cancellation_reason || undefined,
     canceledBy: row.canceled_by || undefined,
     canceledAt: row.canceled_at || undefined,
+    professorUid: prof.professorUid,
+    professorName: prof.professorName,
+    professorEmail: prof.professorEmail,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -134,6 +315,8 @@ function mapAppointmentRow(row: any): Appointment {
 
 export async function sbGetActiveSemester(): Promise<SemesterSettings | null> {
   if (!supabase) return null;
+  await loadOwnershipMapFromSupabase();
+
   const { data, error } = await supabase
     .from('semester_settings')
     .select('*')
@@ -158,6 +341,7 @@ export async function sbGetActiveSemester(): Promise<SemesterSettings | null> {
 
 export async function sbGetAllSemesters(): Promise<SemesterSettings[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
   const { data, error } = await supabase.from('semester_settings').select('*');
   if (error || !data) return [];
   return data.map(mapSemesterRow);
@@ -174,7 +358,9 @@ export async function sbSaveSemester(
     // Ignore
   }
 
-  const payloadWithForm: Record<string, any> = {
+  const prof = getCurrentProfessorAttribution(semester);
+
+  const basePayload: Record<string, any> = {
     id: semester.id,
     year: semester.year,
     semester: semester.semester,
@@ -191,13 +377,24 @@ export async function sbSaveSemester(
     updated_at: new Date().toISOString(),
   };
 
-  // 1. Upsert the target semester row first (so foreign keys can reference semester.id)
-  const { error } = await supabase.from('semester_settings').upsert(payloadWithForm);
+  const payloadWithProf: Record<string, any> = {
+    ...basePayload,
+    professor_name: prof.professorName,
+    professor_email: prof.professorEmail,
+    professor_uid: prof.professorUid,
+  };
+
+  // 1. Upsert the target semester row first (with professor columns if present, fallback if not)
+  const { error } = await supabase.from('semester_settings').upsert(payloadWithProf);
   if (error) {
-    const { google_form_url, updated_at, ...fallbackPayload } = payloadWithForm;
-    const { error: retryErr } = await supabase.from('semester_settings').upsert(fallbackPayload);
-    if (retryErr) throw retryErr;
+    const { error: retryErr } = await supabase.from('semester_settings').upsert(basePayload);
+    if (retryErr) {
+      const { google_form_url, updated_at, ...minimalPayload } = basePayload;
+      const { error: minErr } = await supabase.from('semester_settings').upsert(minimalPayload);
+      if (minErr) throw minErr;
+    }
   }
+  await saveOwnershipForRecord('semester_settings', semester.id, prof);
 
   // 2. Find any other semester rows (e.g. when year or semester changed from 2026-2 to 2027-1)
   const { data: allSems } = await supabase
@@ -215,10 +412,8 @@ export async function sbSaveSemester(
     });
   }
 
-  // 3. Migrate child records (classes, personal schedules, students, appointments, slot_locks)
-  // to the new semester.id and remove stale semester_settings rows so the table stays clean
+  // 3. Migrate child records to the new semester.id and remove stale semester_settings rows
   for (const oldId of oldIds) {
-    // Migrate class_schedules and sync their start_date / end_date to the new semester period
     await supabase
       .from('class_schedules')
       .update({
@@ -228,25 +423,21 @@ export async function sbSaveSemester(
       })
       .eq('semester_id', oldId);
 
-    // Migrate personal_schedules
     await supabase
       .from('personal_schedules')
       .update({ semester_id: semester.id })
       .eq('semester_id', oldId);
 
-    // Migrate appointments
     await supabase
       .from('appointments')
       .update({ semester_id: semester.id })
       .eq('semester_id', oldId);
 
-    // Migrate slot_locks
     await supabase
       .from('slot_locks')
       .update({ semester_id: semester.id })
       .eq('semester_id', oldId);
 
-    // Migrate students (since primary key id is `${semesterId}_${studentId}`)
     const { data: oldStudents } = await supabase
       .from('students')
       .select('*')
@@ -265,11 +456,9 @@ export async function sbSaveSemester(
       await supabase.from('students').delete().eq('semester_id', oldId);
     }
 
-    // Delete old semester_settings row so only the updated row remains in Supabase
     await supabase.from('semester_settings').delete().eq('id', oldId);
   }
 
-  // Also ensure existing class schedules in the same semester have updated start_date/end_date if needed
   await supabase
     .from('class_schedules')
     .update({
@@ -277,6 +466,167 @@ export async function sbSaveSemester(
       end_date: semester.endDate,
     })
     .eq('semester_id', semester.id);
+}
+
+export function resolveProfessorConsultationSettings(
+  prof: ProfessorAttribution,
+  settingsMap: Record<string, ProfessorConsultationSettings>,
+  fallbackAdminFormUrl = ''
+): ProfessorConsultationSettings {
+  const uid = (prof.professorUid || DEFAULT_PROFESSOR.professorUid).trim();
+  const email = (prof.professorEmail || DEFAULT_PROFESSOR.professorEmail).trim().toLowerCase();
+  const name =
+    (prof.professorName || DEFAULT_PROFESSOR.professorName)
+      .replace(/\s*\(관리자\)\s*$/, '')
+      .trim() || DEFAULT_PROFESSOR.professorName;
+
+  const byUid = settingsMap[uid];
+  if (byUid) {
+    return {
+      ...byUid,
+      professorUid: uid,
+      professorEmail: email,
+      professorName: name,
+    };
+  }
+
+  const byEmail = settingsMap[email];
+  if (byEmail) {
+    return {
+      ...byEmail,
+      professorUid: uid,
+      professorEmail: email,
+      professorName: name,
+    };
+  }
+
+  const isDefaultAdmin =
+    uid === 'admin-professor' || email === 'sungwoopark1224@gmail.com';
+
+  return {
+    professorUid: uid,
+    professorEmail: email,
+    professorName: name,
+    onlineEnabled: isDefaultAdmin ? true : false,
+    googleFormUrl: isDefaultAdmin ? (fallbackAdminFormUrl || '').trim() : '',
+  };
+}
+
+export async function sbGetProfessorConsultationSettingsMap(
+  fallbackAdminFormUrl = ''
+): Promise<Record<string, ProfessorConsultationSettings>> {
+  try {
+    const localRaw = localStorage.getItem(LOCAL_PROF_SETTINGS_KEY);
+    if (localRaw) {
+      const parsedLocal = JSON.parse(localRaw);
+      if (parsedLocal && typeof parsedLocal === 'object') {
+        cachedProfSettingsMap = { ...cachedProfSettingsMap, ...parsedLocal };
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_users')
+        .select('name')
+        .eq('uid', PROF_SETTINGS_META_UID)
+        .maybeSingle();
+
+      if (!error && data?.name) {
+        const parsed = JSON.parse(data.name);
+        if (parsed && typeof parsed === 'object') {
+          cachedProfSettingsMap = { ...cachedProfSettingsMap, ...parsed };
+          try {
+            localStorage.setItem(LOCAL_PROF_SETTINGS_KEY, JSON.stringify(cachedProfSettingsMap));
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (!cachedProfSettingsMap['admin-professor']) {
+    cachedProfSettingsMap['admin-professor'] = {
+      professorUid: 'admin-professor',
+      professorEmail: 'sungwoopark1224@gmail.com',
+      professorName: '박성우 교수',
+      onlineEnabled: true,
+      googleFormUrl: (fallbackAdminFormUrl || '').trim(),
+    };
+  } else if (
+    fallbackAdminFormUrl &&
+    !cachedProfSettingsMap['admin-professor'].googleFormUrl
+  ) {
+    cachedProfSettingsMap['admin-professor'] = {
+      ...cachedProfSettingsMap['admin-professor'],
+      googleFormUrl: fallbackAdminFormUrl.trim(),
+    };
+  }
+
+  return { ...cachedProfSettingsMap };
+}
+
+export async function sbSaveProfessorConsultationSettings(
+  settings: ProfessorConsultationSettings,
+  semesterId?: string
+): Promise<void> {
+  const uid = (settings.professorUid || DEFAULT_PROFESSOR.professorUid).trim();
+  const email = (settings.professorEmail || DEFAULT_PROFESSOR.professorEmail)
+    .trim()
+    .toLowerCase();
+  const name =
+    (settings.professorName || DEFAULT_PROFESSOR.professorName)
+      .replace(/\s*\(관리자\)\s*$/, '')
+      .trim() || DEFAULT_PROFESSOR.professorName;
+
+  const cleanEntry: ProfessorConsultationSettings = {
+    professorUid: uid,
+    professorEmail: email,
+    professorName: name,
+    onlineEnabled: Boolean(settings.onlineEnabled),
+    googleFormUrl: (settings.googleFormUrl || '').trim(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const currentMap = await sbGetProfessorConsultationSettingsMap();
+  const nextMap: Record<string, ProfessorConsultationSettings> = {
+    ...currentMap,
+    [uid]: cleanEntry,
+    [email]: cleanEntry,
+  };
+  cachedProfSettingsMap = nextMap;
+
+  try {
+    localStorage.setItem(LOCAL_PROF_SETTINGS_KEY, JSON.stringify(nextMap));
+  } catch {
+    // Ignore
+  }
+
+  if (supabase) {
+    const { error } = await supabase.from('admin_users').upsert({
+      uid: PROF_SETTINGS_META_UID,
+      email: 'meta-settings@system.local',
+      name: JSON.stringify(nextMap),
+      role: 'meta',
+    });
+    if (error) {
+      throw error;
+    }
+
+    // If this is the primary admin professor, also keep semester_settings.google_form_url in sync
+    if (
+      (uid === 'admin-professor' || email === 'sungwoopark1224@gmail.com') &&
+      semesterId
+    ) {
+      await sbUpdateSemesterGoogleFormUrl(semesterId, cleanEntry.googleFormUrl);
+    }
+  }
 }
 
 export async function sbUpdateSemesterGoogleFormUrl(
@@ -290,20 +640,37 @@ export async function sbUpdateSemesterGoogleFormUrl(
     // Ignore
   }
   if (!supabase) return;
+  const prof = getCurrentProfessorAttribution();
   const { error } = await supabase
     .from('semester_settings')
     .update({
       google_form_url: cleanUrl,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .eq('id', semesterId);
 
   if (error) {
-    // If column google_form_url does not exist yet in Supabase table, log warning instead of failing UI
-    console.warn('Supabase google_form_url update warning:', error.message);
-    if (!error.message?.includes('google_form_url') && !error.code?.includes('PGRST204') && !error.code?.includes('42703')) {
-      throw error;
+    const { error: retryErr } = await supabase
+      .from('semester_settings')
+      .update({
+        google_form_url: cleanUrl,
+      })
+      .eq('id', semesterId);
+
+    if (retryErr) {
+      console.warn('Supabase google_form_url update warning:', retryErr.message);
+      if (
+        !retryErr.message?.includes('google_form_url') &&
+        !retryErr.code?.includes('PGRST204') &&
+        !retryErr.code?.includes('42703')
+      ) {
+        throw retryErr;
+      }
     }
   }
+  await saveOwnershipForRecord('semester_settings', semesterId, prof);
 }
 
 // ----------------------------------------------------
@@ -312,6 +679,7 @@ export async function sbUpdateSemesterGoogleFormUrl(
 
 export async function sbGetClassSchedules(semesterId: string): Promise<ClassSchedule[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
   const { data, error } = await supabase
     .from('class_schedules')
     .select('*')
@@ -324,21 +692,44 @@ export async function sbAddClassSchedule(
   data: Omit<ClassSchedule, 'id' | 'createdAt'>
 ): Promise<string> {
   if (!supabase) throw new Error('Supabase not configured');
+  const prof = getCurrentProfessorAttribution(data);
+
+  const basePayload = {
+    semester_id: data.semesterId,
+    title: data.title,
+    weekday: data.weekday,
+    start_time: data.startTime,
+    end_time: data.endTime,
+    start_date: data.startDate,
+    end_date: data.endDate,
+  };
+
+  let insertedRow: any = null;
   const { data: inserted, error } = await supabase
     .from('class_schedules')
     .insert({
-      semester_id: data.semesterId,
-      title: data.title,
-      weekday: data.weekday,
-      start_time: data.startTime,
-      end_time: data.endTime,
-      start_date: data.startDate,
-      end_date: data.endDate,
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .select()
     .single();
-  if (error) throw error;
-  return inserted.id;
+
+  if (error) {
+    const { data: retryInserted, error: retryErr } = await supabase
+      .from('class_schedules')
+      .insert(basePayload)
+      .select()
+      .single();
+    if (retryErr) throw retryErr;
+    insertedRow = retryInserted;
+  } else {
+    insertedRow = inserted;
+  }
+
+  await saveOwnershipForRecord('class_schedules', insertedRow.id, prof);
+  return insertedRow.id;
 }
 
 export async function sbUpdateClassSchedule(
@@ -346,18 +737,36 @@ export async function sbUpdateClassSchedule(
   data: Omit<ClassSchedule, 'id' | 'createdAt'>
 ): Promise<void> {
   if (!supabase) throw new Error('Supabase not configured');
+  const prof = getCurrentProfessorAttribution(data);
+
+  const basePayload = {
+    title: data.title,
+    weekday: data.weekday,
+    start_time: data.startTime,
+    end_time: data.endTime,
+    start_date: data.startDate,
+    end_date: data.endDate,
+  };
+
   const { error } = await supabase
     .from('class_schedules')
     .update({
-      title: data.title,
-      weekday: data.weekday,
-      start_time: data.startTime,
-      end_time: data.endTime,
-      start_date: data.startDate,
-      end_date: data.endDate,
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .eq('id', scheduleId);
-  if (error) throw error;
+
+  if (error) {
+    const { error: retryErr } = await supabase
+      .from('class_schedules')
+      .update(basePayload)
+      .eq('id', scheduleId);
+    if (retryErr) throw retryErr;
+  }
+
+  await saveOwnershipForRecord('class_schedules', scheduleId, prof);
 }
 
 export async function sbDeleteClassSchedule(scheduleId: string): Promise<void> {
@@ -372,6 +781,7 @@ export async function sbDeleteClassSchedule(scheduleId: string): Promise<void> {
 
 export async function sbGetPersonalSchedules(semesterId: string): Promise<PersonalSchedule[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
   const { data, error } = await supabase
     .from('personal_schedules')
     .select('*')
@@ -384,9 +794,13 @@ export async function sbCheckPersonalScheduleConflicts(
   date: string,
   startTime: string,
   endTime: string,
-  semesterId: string
+  semesterId: string,
+  profOverride?: ProfessorAttribution
 ): Promise<Appointment[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
+  const prof = getCurrentProfessorAttribution(profOverride);
+
   const { data, error } = await supabase
     .from('appointments')
     .select('*')
@@ -398,7 +812,12 @@ export async function sbCheckPersonalScheduleConflicts(
   const conflicts: Appointment[] = [];
   for (const row of data) {
     const apt = mapAppointmentRow(row);
-    if (hasTimeOverlap(apt.startTime, apt.endTime, startTime, endTime)) {
+    const sameProfessor =
+      (apt.professorEmail &&
+        apt.professorEmail.toLowerCase() === prof.professorEmail.toLowerCase()) ||
+      (apt.professorUid && apt.professorUid === prof.professorUid);
+
+    if (sameProfessor && hasTimeOverlap(apt.startTime, apt.endTime, startTime, endTime)) {
       conflicts.push(apt);
     }
   }
@@ -410,27 +829,49 @@ export async function sbSavePersonalScheduleWithAutoCancel(
   conflictAppointments: Appointment[]
 ): Promise<string> {
   if (!supabase) throw new Error('Supabase not configured');
+  const prof = getCurrentProfessorAttribution(personalData);
+
+  const basePayload = {
+    semester_id: personalData.semesterId,
+    title: personalData.title,
+    note: personalData.note || '',
+    date: personalData.date,
+    start_time: personalData.startTime,
+    end_time: personalData.endTime,
+  };
 
   // 1. Insert personal schedule
+  let insertedRow: any = null;
   const { data: inserted, error: insertErr } = await supabase
     .from('personal_schedules')
     .insert({
-      semester_id: personalData.semesterId,
-      title: personalData.title,
-      note: personalData.note || '',
-      date: personalData.date,
-      start_time: personalData.startTime,
-      end_time: personalData.endTime,
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .select()
     .single();
 
-  if (insertErr) throw insertErr;
+  if (insertErr) {
+    const { data: retryInserted, error: retryErr } = await supabase
+      .from('personal_schedules')
+      .insert(basePayload)
+      .select()
+      .single();
+    if (retryErr) throw retryErr;
+    insertedRow = retryInserted;
+  } else {
+    insertedRow = inserted;
+  }
 
-  // 2. Upsert 30-min slot locks
+  await saveOwnershipForRecord('personal_schedules', insertedRow.id, prof);
+
+  // 2. Upsert 30-min slot locks (scoped per professor so other professors' schedules do not collide)
   const slots = generate30MinSlots(personalData.startTime, personalData.endTime);
-  const lockRows = slots.map((slotTime) => {
-    const lockId = `${personalData.date}_${slotTime}`;
+  const lockPrefix = prof.professorUid === 'admin-professor' ? '' : `${prof.professorUid}_`;
+  const baseLocks = slots.map((slotTime) => {
+    const lockId = `${lockPrefix}${personalData.date}_${slotTime}`;
     return {
       id: lockId,
       slot_key: lockId,
@@ -438,13 +879,22 @@ export async function sbSavePersonalScheduleWithAutoCancel(
       time: slotTime,
       type: 'personal',
       semester_id: personalData.semesterId,
-      reference_id: inserted.id,
+      reference_id: insertedRow.id,
     };
   });
 
-  if (lockRows.length > 0) {
-    const { error: lockErr } = await supabase.from('slot_locks').upsert(lockRows);
-    if (lockErr) throw lockErr;
+  if (baseLocks.length > 0) {
+    const locksWithProf = baseLocks.map((l) => ({
+      ...l,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
+    }));
+    const { error: lockErr } = await supabase.from('slot_locks').upsert(locksWithProf);
+    if (lockErr) {
+      const { error: retryLockErr } = await supabase.from('slot_locks').upsert(baseLocks);
+      if (retryLockErr) throw retryLockErr;
+    }
   }
 
   // 3. Mark conflicting appointments as canceled (retain student info)
@@ -461,15 +911,25 @@ export async function sbSavePersonalScheduleWithAutoCancel(
       .eq('appointment_id', apt.appointmentId);
   }
 
-  return inserted.id;
+  return insertedRow.id;
 }
 
 export async function sbDeletePersonalSchedule(schedule: PersonalSchedule): Promise<void> {
   if (!supabase) return;
   await supabase.from('personal_schedules').delete().eq('id', schedule.id);
 
+  // 1. Delete locks linked by reference_id
+  if (schedule.id) {
+    await supabase.from('slot_locks').delete().eq('reference_id', schedule.id);
+  }
+
+  // 2. Also delete locks by deterministic slot lock IDs (both default and professor-prefixed)
   const slots = generate30MinSlots(schedule.startTime, schedule.endTime);
-  const lockIds = slots.map((slotTime) => `${schedule.date}_${slotTime}`);
+  const profUid = schedule.professorUid || 'admin-professor';
+  const lockIds = slots.flatMap((slotTime) => [
+    `${schedule.date}_${slotTime}`,
+    `${profUid}_${schedule.date}_${slotTime}`,
+  ]);
   if (lockIds.length > 0) {
     await supabase.from('slot_locks').delete().in('id', lockIds);
   }
@@ -481,31 +941,56 @@ export async function sbUpdatePersonalSchedule(
   conflictAppointments: Appointment[] = []
 ): Promise<void> {
   if (!supabase) throw new Error('Supabase not configured');
+  const prof = getCurrentProfessorAttribution(updatedData);
 
-  // 1. Remove old slot locks
+  // 1. Remove old slot locks (by reference_id and deterministic IDs)
+  if (oldSchedule.id) {
+    await supabase.from('slot_locks').delete().eq('reference_id', oldSchedule.id);
+  }
   const oldSlots = generate30MinSlots(oldSchedule.startTime, oldSchedule.endTime);
-  const oldLockIds = oldSlots.map((slotTime) => `${oldSchedule.date}_${slotTime}`);
+  const oldProfUid = oldSchedule.professorUid || prof.professorUid || 'admin-professor';
+  const oldLockIds = oldSlots.flatMap((slotTime) => [
+    `${oldSchedule.date}_${slotTime}`,
+    `${oldProfUid}_${oldSchedule.date}_${slotTime}`,
+  ]);
   if (oldLockIds.length > 0) {
     await supabase.from('slot_locks').delete().in('id', oldLockIds);
   }
+
+  const basePayload = {
+    title: updatedData.title,
+    note: updatedData.note || '',
+    date: updatedData.date,
+    start_time: updatedData.startTime,
+    end_time: updatedData.endTime,
+  };
 
   // 2. Update personal_schedules row
   const { error: updErr } = await supabase
     .from('personal_schedules')
     .update({
-      title: updatedData.title,
-      note: updatedData.note || '',
-      date: updatedData.date,
-      start_time: updatedData.startTime,
-      end_time: updatedData.endTime,
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .eq('id', oldSchedule.id);
-  if (updErr) throw updErr;
+
+  if (updErr) {
+    const { error: retryErr } = await supabase
+      .from('personal_schedules')
+      .update(basePayload)
+      .eq('id', oldSchedule.id);
+    if (retryErr) throw retryErr;
+  }
+
+  await saveOwnershipForRecord('personal_schedules', oldSchedule.id, prof);
 
   // 3. Create new slot locks
   const newSlots = generate30MinSlots(updatedData.startTime, updatedData.endTime);
-  const lockRows = newSlots.map((slotTime) => {
-    const lockId = `${updatedData.date}_${slotTime}`;
+  const lockPrefix = prof.professorUid === 'admin-professor' ? '' : `${prof.professorUid}_`;
+  const baseLocks = newSlots.map((slotTime) => {
+    const lockId = `${lockPrefix}${updatedData.date}_${slotTime}`;
     return {
       id: lockId,
       slot_key: lockId,
@@ -516,8 +1001,17 @@ export async function sbUpdatePersonalSchedule(
       reference_id: oldSchedule.id,
     };
   });
-  if (lockRows.length > 0) {
-    await supabase.from('slot_locks').upsert(lockRows);
+  if (baseLocks.length > 0) {
+    const locksWithProf = baseLocks.map((l) => ({
+      ...l,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
+    }));
+    const { error: lockErr } = await supabase.from('slot_locks').upsert(locksWithProf);
+    if (lockErr) {
+      await supabase.from('slot_locks').upsert(baseLocks);
+    }
   }
 
   // 4. Cancel conflicting appointments if any
@@ -541,6 +1035,7 @@ export async function sbUpdatePersonalSchedule(
 
 export async function sbGetStudents(semesterId: string): Promise<StudentRecord[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
   const { data, error } = await supabase
     .from('students')
     .select('*')
@@ -551,10 +1046,13 @@ export async function sbGetStudents(semesterId: string): Promise<StudentRecord[]
 
 export async function sbAddStudentsBatch(
   semesterId: string,
-  students: Array<{ studentId: string; name?: string; firstSemesterInPerson?: boolean }>
+  students: Array<{ studentId: string; name?: string; firstSemesterInPerson?: boolean }>,
+  profOverride?: ProfessorAttribution
 ): Promise<number> {
   if (!supabase) return 0;
-  const rows = students
+  const prof = getCurrentProfessorAttribution(profOverride);
+
+  const baseRows = students
     .map((s) => {
       const cleanId = s.studentId.trim();
       if (!cleanId) return null;
@@ -567,12 +1065,30 @@ export async function sbAddStudentsBatch(
         first_semester_in_person: s.firstSemesterInPerson ?? true,
       };
     })
-    .filter(Boolean);
+    .filter(Boolean) as Array<Record<string, any>>;
 
-  if (rows.length === 0) return 0;
-  const { error } = await supabase.from('students').upsert(rows);
-  if (error) throw error;
-  return rows.length;
+  if (baseRows.length === 0) return 0;
+
+  const rowsWithProf = baseRows.map((r) => ({
+    ...r,
+    professor_name: prof.professorName,
+    professor_email: prof.professorEmail,
+    professor_uid: prof.professorUid,
+  }));
+
+  const { error } = await supabase.from('students').upsert(rowsWithProf);
+  if (error) {
+    const { error: retryErr } = await supabase.from('students').upsert(baseRows);
+    if (retryErr) throw retryErr;
+  }
+
+  await saveOwnershipForRecords(
+    'students',
+    baseRows.map((r) => r.id),
+    prof
+  );
+
+  return baseRows.length;
 }
 
 export async function sbToggleStudentStatus(docId: string, currentActive: boolean): Promise<void> {
@@ -601,15 +1117,31 @@ export async function sbUpdateStudent(
   updates: { name: string; firstSemesterInPerson: boolean; active: boolean }
 ): Promise<void> {
   if (!supabase) return;
+  const prof = getCurrentProfessorAttribution();
+  const basePayload = {
+    name: updates.name.trim(),
+    first_semester_in_person: updates.firstSemesterInPerson,
+    active: updates.active,
+  };
+
   const { error } = await supabase
     .from('students')
     .update({
-      name: updates.name.trim(),
-      first_semester_in_person: updates.firstSemesterInPerson,
-      active: updates.active,
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .eq('id', docId);
-  if (error) throw error;
+
+  if (error) {
+    const { error: retryErr } = await supabase
+      .from('students')
+      .update(basePayload)
+      .eq('id', docId);
+    if (retryErr) throw retryErr;
+  }
+  await saveOwnershipForRecord('students', docId, prof);
 }
 
 export async function sbDeleteStudent(docId: string): Promise<void> {
@@ -637,12 +1169,48 @@ export async function sbIsStudentEligible(semesterId: string, studentId: string)
 
 export async function sbGetSlotLocks(semesterId: string): Promise<SlotLock[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('slot_locks')
-    .select('*')
-    .eq('semester_id', semesterId);
-  if (error || !data) return [];
-  return data.map(mapSlotLockRow);
+  await loadOwnershipMapFromSupabase();
+
+  const [locksRes, personalRes, aptsRes] = await Promise.all([
+    supabase.from('slot_locks').select('*').eq('semester_id', semesterId),
+    supabase.from('personal_schedules').select('id').eq('semester_id', semesterId),
+    supabase
+      .from('appointments')
+      .select('appointment_id, status')
+      .eq('semester_id', semesterId),
+  ]);
+
+  if (locksRes.error || !locksRes.data) return [];
+
+  const validPersonalIds = new Set((personalRes.data || []).map((p: any) => String(p.id)));
+  const validConfirmedAptIds = new Set(
+    (aptsRes.data || [])
+      .filter((a: any) => a.status === 'confirmed')
+      .map((a: any) => String(a.appointment_id))
+  );
+
+  const orphanLockIds: string[] = [];
+  const validRows = locksRes.data.filter((row: any) => {
+    if (row.type === 'personal' && row.reference_id && !personalRes.error) {
+      if (!validPersonalIds.has(String(row.reference_id))) {
+        orphanLockIds.push(row.id);
+        return false;
+      }
+    }
+    if (row.type === 'appointment' && row.reference_id && !aptsRes.error) {
+      if (!validConfirmedAptIds.has(String(row.reference_id))) {
+        orphanLockIds.push(row.id);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (orphanLockIds.length > 0) {
+    supabase.from('slot_locks').delete().in('id', orphanLockIds).then(() => {});
+  }
+
+  return validRows.map(mapSlotLockRow);
 }
 
 export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<BookingResult> {
@@ -712,7 +1280,19 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
 
     const { subSlots, endTime } = getAppointmentSubSlots(req.startTime, 60);
 
+    const requestedProf: Required<ProfessorAttribution> = {
+      professorUid: (req.professorUid || DEFAULT_PROFESSOR.professorUid).trim(),
+      professorName:
+        (req.professorName || DEFAULT_PROFESSOR.professorName)
+          .replace(/\s*\(관리자\)\s*$/, '')
+          .trim() || DEFAULT_PROFESSOR.professorName,
+      professorEmail: (req.professorEmail || DEFAULT_PROFESSOR.professorEmail)
+        .trim()
+        .toLowerCase(),
+    };
+
     // C. Validate student ID in this semester
+    await loadOwnershipMapFromSupabase();
     const cleanStudentId = req.studentId.trim();
     const { data: studentRow, error: studentErr } = await supabase
       .from('students')
@@ -728,15 +1308,67 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
       };
     }
 
-    if (req.consultationType === 'online' && studentRow.first_semester_in_person === false) {
+    const mappedStudent = mapStudentRow(studentRow);
+    const studentProfEmail = (mappedStudent.professorEmail || DEFAULT_PROFESSOR.professorEmail)
+      .trim()
+      .toLowerCase();
+    const studentProfUid = (mappedStudent.professorUid || DEFAULT_PROFESSOR.professorUid).trim();
+    const studentProfName = (mappedStudent.professorName || DEFAULT_PROFESSOR.professorName)
+      .replace(/\s*\(관리자\)\s*$/, '')
+      .trim();
+
+    const isMatchingAdvisor =
+      (studentProfEmail &&
+        requestedProf.professorEmail &&
+        studentProfEmail === requestedProf.professorEmail) ||
+      (studentProfUid &&
+        requestedProf.professorUid &&
+        studentProfUid === requestedProf.professorUid) ||
+      (studentProfName &&
+        requestedProf.professorName &&
+        studentProfName === requestedProf.professorName);
+
+    if (!isMatchingAdvisor) {
       return {
         success: false,
-        errorMessage: '올해 처음으로 상담을 진행하는 학생(1학기 대면 상담 미진행)은 반드시 대면 상담을 선택해야 합니다.',
+        errorMessage: `입력하신 학번(${cleanStudentId})의 배정된 지도교수는 [${studentProfName}]입니다. 상단 '지도교수 선택'에서 [${studentProfName}]을(를) 선택한 후 신청해주세요.`,
         code: 'INVALID_STUDENT',
       };
     }
 
-    // D. Validate class schedule overlap
+    const assignedProf: Required<ProfessorAttribution> = {
+      professorUid: mappedStudent.professorUid || requestedProf.professorUid,
+      professorName: mappedStudent.professorName || requestedProf.professorName,
+      professorEmail: mappedStudent.professorEmail || requestedProf.professorEmail,
+    };
+
+    if (req.consultationType === 'online') {
+      const profSettingsMap = await sbGetProfessorConsultationSettingsMap(
+        semester.googleFormUrl || ''
+      );
+      const profConfig = resolveProfessorConsultationSettings(
+        assignedProf,
+        profSettingsMap,
+        semester.googleFormUrl || ''
+      );
+      if (!profConfig.onlineEnabled) {
+        return {
+          success: false,
+          errorMessage: `${assignedProf.professorName}님은 현재 비대면 상담을 운영하지 않습니다. 대면 상담으로 신청해주세요.`,
+          code: 'OUT_OF_RANGE',
+        };
+      }
+      if (studentRow.first_semester_in_person === false) {
+        return {
+          success: false,
+          errorMessage:
+            '올해 처음으로 상담을 진행하는 학생(1학기 대면 상담 미진행)은 반드시 대면 상담을 선택해야 합니다.',
+          code: 'INVALID_STUDENT',
+        };
+      }
+    }
+
+    // D. Validate class schedule overlap (scoped to the selected professor)
     const dayOfWeekIdx = getDayOfWeek(req.date);
     const weekdayName = getWeekdayNameEn(dayOfWeekIdx);
     const { data: classRows } = await supabase
@@ -748,6 +1380,21 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
     if (classRows) {
       for (const cRow of classRows) {
         const cls = mapClassRow(cRow);
+        const clsEmail = (cls.professorEmail || DEFAULT_PROFESSOR.professorEmail)
+          .trim()
+          .toLowerCase();
+        const clsUid = (cls.professorUid || DEFAULT_PROFESSOR.professorUid).trim();
+        const clsName = (cls.professorName || DEFAULT_PROFESSOR.professorName)
+          .replace(/\s*\(관리자\)\s*$/, '')
+          .trim();
+
+        const isSameProfClass =
+          (clsEmail && clsEmail === assignedProf.professorEmail.toLowerCase()) ||
+          (clsUid && clsUid === assignedProf.professorUid) ||
+          (clsName && clsName === assignedProf.professorName);
+
+        if (!isSameProfClass) continue;
+
         if (isDateInRange(req.date, cls.startDate, cls.endDate)) {
           if (hasTimeOverlap(req.startTime, endTime, cls.startTime, cls.endTime)) {
             return {
@@ -760,11 +1407,13 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
       }
     }
 
-    // E. Acquire atomic 30-min slot locks via unique constraint on slot_locks(id)
-    const lock1Id = `${req.date}_${subSlots[0]}`;
-    const lock2Id = `${req.date}_${subSlots[1]}`;
+    // E. Acquire atomic 30-min slot locks via unique constraint on slot_locks(id), scoped per professor
+    const lockPrefix =
+      assignedProf.professorUid === 'admin-professor' ? '' : `${assignedProf.professorUid}_`;
+    const lock1Id = `${lockPrefix}${req.date}_${subSlots[0]}`;
+    const lock2Id = `${lockPrefix}${req.date}_${subSlots[1]}`;
 
-    const { error: lockErr } = await supabase.from('slot_locks').insert([
+    const baseLocks = [
       {
         id: lock1Id,
         slot_key: lock1Id,
@@ -781,44 +1430,82 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
         type: 'appointment',
         semester_id: req.semesterId,
       },
-    ]);
+    ];
 
+    const locksWithProf = baseLocks.map((l) => ({
+      ...l,
+      professor_name: assignedProf.professorName,
+      professor_email: assignedProf.professorEmail,
+      professor_uid: assignedProf.professorUid,
+    }));
+
+    const { error: lockErr } = await supabase.from('slot_locks').insert(locksWithProf);
     if (lockErr) {
-      return {
-        success: false,
-        errorMessage: '선택하신 시간이 방금 마감되었습니다. 다른 시간을 선택해주세요.',
-        code: 'TIME_CONFLICT',
-      };
+      const { error: retryLockErr } = await supabase.from('slot_locks').insert(baseLocks);
+      if (retryLockErr) {
+        return {
+          success: false,
+          errorMessage: '선택하신 시간이 방금 마감되었습니다. 다른 시간을 선택해주세요.',
+          code: 'TIME_CONFLICT',
+        };
+      }
     }
 
     const confirmationCode = generateConfirmationCode(req.date);
     const startAt = `${req.date}T${req.startTime}:00+09:00`;
     const endAt = `${req.date}T${endTime}:00+09:00`;
 
-    const { data: aptInserted, error: aptErr } = await supabase
+    const baseAptPayload = {
+      semester_id: req.semesterId,
+      student_name: req.studentName.trim(),
+      student_id: cleanStudentId,
+      phone: req.phone.trim(),
+      consultation_type: req.consultationType,
+      date: req.date,
+      start_time: req.startTime,
+      end_time: endTime,
+      start_at: startAt,
+      end_at: endAt,
+      status: 'confirmed',
+      confirmation_code: confirmationCode,
+    };
+
+    let aptInserted: any = null;
+    const { data: insertedWithProf, error: aptErr } = await supabase
       .from('appointments')
       .insert({
-        semester_id: req.semesterId,
-        student_name: req.studentName.trim(),
-        student_id: cleanStudentId,
-        phone: req.phone.trim(),
-        consultation_type: req.consultationType,
-        date: req.date,
-        start_time: req.startTime,
-        end_time: endTime,
-        start_at: startAt,
-        end_at: endAt,
-        status: 'confirmed',
-        confirmation_code: confirmationCode,
+        ...baseAptPayload,
+        professor_name: assignedProf.professorName,
+        professor_email: assignedProf.professorEmail,
+        professor_uid: assignedProf.professorUid,
       })
       .select()
       .single();
 
-    if (aptErr || !aptInserted) {
-      // Rollback locks if appointment insert failed
-      await supabase.from('slot_locks').delete().in('id', [lock1Id, lock2Id]);
-      throw aptErr || new Error('Failed to create appointment');
+    if (aptErr) {
+      const { data: retryApt, error: retryAptErr } = await supabase
+        .from('appointments')
+        .insert(baseAptPayload)
+        .select()
+        .single();
+      if (retryAptErr || !retryApt) {
+        await supabase.from('slot_locks').delete().in('id', [lock1Id, lock2Id]);
+        throw retryAptErr || new Error('Failed to create appointment');
+      }
+      aptInserted = retryApt;
+    } else {
+      aptInserted = insertedWithProf;
     }
+
+  if (aptInserted?.appointment_id) {
+    await supabase
+      .from('slot_locks')
+      .update({ reference_id: aptInserted.appointment_id })
+      .in('id', [lock1Id, lock2Id]);
+  }
+
+    await saveOwnershipForRecords('slot_locks', [lock1Id, lock2Id], assignedProf);
+    await saveOwnershipForRecord('appointments', aptInserted.appointment_id, assignedProf);
 
     return {
       success: true,
@@ -840,6 +1527,7 @@ export async function sbBookAppointmentAtomic(req: BookingRequest): Promise<Book
 
 export async function sbGetAdminAppointments(semesterId: string): Promise<Appointment[]> {
   if (!supabase) return [];
+  await loadOwnershipMapFromSupabase();
   const { data, error } = await supabase
     .from('appointments')
     .select('*')
@@ -875,8 +1563,13 @@ export async function sbCancelAppointmentByAdmin(
     })
     .eq('appointment_id', appointmentId);
 
+  await supabase.from('slot_locks').delete().eq('reference_id', appointmentId);
   const { subSlots } = getAppointmentSubSlots(apt.startTime, 60);
-  const lockIds = subSlots.map((slot) => `${apt.date}_${slot}`);
+  const profUid = apt.professorUid || 'admin-professor';
+  const lockIds = subSlots.flatMap((slot) => [
+    `${apt.date}_${slot}`,
+    `${profUid}_${apt.date}_${slot}`,
+  ]);
   await supabase.from('slot_locks').delete().in('id', lockIds);
 }
 
@@ -893,6 +1586,8 @@ export async function sbUpdateAppointmentByAdmin(
   }
 ): Promise<void> {
   if (!supabase) return;
+  const prof = getCurrentProfessorAttribution();
+
   const { data: oldRow } = await supabase
     .from('appointments')
     .select('*')
@@ -901,10 +1596,15 @@ export async function sbUpdateAppointmentByAdmin(
 
   if (!oldRow) return;
   const oldApt = mapAppointmentRow(oldRow);
+  const oldProfUid = oldApt.professorUid || prof.professorUid || 'admin-professor';
 
   // 1. Remove old slot locks
+  await supabase.from('slot_locks').delete().eq('reference_id', appointmentId);
   const oldSub = getAppointmentSubSlots(oldApt.startTime, 60);
-  const oldLockIds = oldSub.subSlots.map((slot) => `${oldApt.date}_${slot}`);
+  const oldLockIds = oldSub.subSlots.flatMap((slot) => [
+    `${oldApt.date}_${slot}`,
+    `${oldProfUid}_${oldApt.date}_${slot}`,
+  ]);
   if (oldLockIds.length > 0) {
     await supabase.from('slot_locks').delete().in('id', oldLockIds);
   }
@@ -917,29 +1617,46 @@ export async function sbUpdateAppointmentByAdmin(
   const startAt = `${updates.date}T${updates.startTime}:00+09:00`;
   const endAt = `${updates.date}T${newEndTime}:00+09:00`;
 
+  const basePayload = {
+    student_name: updates.studentName.trim(),
+    student_id: updates.studentId.trim(),
+    phone: updates.phone.trim(),
+    date: updates.date,
+    start_time: updates.startTime,
+    end_time: newEndTime,
+    start_at: startAt,
+    end_at: endAt,
+    consultation_type: updates.consultationType,
+    status: updates.status,
+    updated_at: new Date().toISOString(),
+  };
+
   // 3. Update appointments table
   const { error: updErr } = await supabase
     .from('appointments')
     .update({
-      student_name: updates.studentName.trim(),
-      student_id: updates.studentId.trim(),
-      phone: updates.phone.trim(),
-      date: updates.date,
-      start_time: updates.startTime,
-      end_time: newEndTime,
-      start_at: startAt,
-      end_at: endAt,
-      consultation_type: updates.consultationType,
-      status: updates.status,
-      updated_at: new Date().toISOString(),
+      ...basePayload,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
     })
     .eq('appointment_id', appointmentId);
-  if (updErr) throw updErr;
+
+  if (updErr) {
+    const { error: retryErr } = await supabase
+      .from('appointments')
+      .update(basePayload)
+      .eq('appointment_id', appointmentId);
+    if (retryErr) throw retryErr;
+  }
+
+  await saveOwnershipForRecord('appointments', appointmentId, prof);
 
   // 4. If status is confirmed, upsert new slot locks
   if (updates.status === 'confirmed') {
-    const newLocks = newSubSlots.map((slot) => {
-      const lockId = `${updates.date}_${slot}`;
+    const lockPrefix = prof.professorUid === 'admin-professor' ? '' : `${prof.professorUid}_`;
+    const baseLocks = newSubSlots.map((slot) => {
+      const lockId = `${lockPrefix}${updates.date}_${slot}`;
       return {
         id: lockId,
         slot_key: lockId,
@@ -950,12 +1667,22 @@ export async function sbUpdateAppointmentByAdmin(
         reference_id: appointmentId,
       };
     });
-    await supabase.from('slot_locks').upsert(newLocks);
+    const locksWithProf = baseLocks.map((l) => ({
+      ...l,
+      professor_name: prof.professorName,
+      professor_email: prof.professorEmail,
+      professor_uid: prof.professorUid,
+    }));
+    const { error: lockErr } = await supabase.from('slot_locks').upsert(locksWithProf);
+    if (lockErr) {
+      await supabase.from('slot_locks').upsert(baseLocks);
+    }
   }
 }
 
 export async function sbDeleteAppointmentByAdmin(appointmentId: string): Promise<void> {
   if (!supabase) return;
+  await supabase.from('slot_locks').delete().eq('reference_id', appointmentId);
   const { data: aptRow } = await supabase
     .from('appointments')
     .select('*')
@@ -964,8 +1691,12 @@ export async function sbDeleteAppointmentByAdmin(appointmentId: string): Promise
 
   if (aptRow) {
     const apt = mapAppointmentRow(aptRow);
+    const profUid = apt.professorUid || 'admin-professor';
     const { subSlots } = getAppointmentSubSlots(apt.startTime, 60);
-    const lockIds = subSlots.map((slot) => `${apt.date}_${slot}`);
+    const lockIds = subSlots.flatMap((slot) => [
+      `${apt.date}_${slot}`,
+      `${profUid}_${apt.date}_${slot}`,
+    ]);
     if (lockIds.length > 0) {
       await supabase.from('slot_locks').delete().in('id', lockIds);
     }

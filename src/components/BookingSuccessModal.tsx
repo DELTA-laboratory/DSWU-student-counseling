@@ -16,6 +16,9 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
   onClose,
 }) => {
   const isOnline = appointment.consultationType === 'online';
+  const officeRoom = (appointment.professorName || '').includes('유제혁')
+    ? '차미리사관 348호'
+    : '차미리사관 130호';
 
   return (
     <motion.div
@@ -44,7 +47,7 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
           교수님의 상담 일정에 즉시 확정 반영되었습니다.<br />
           {isOnline
             ? '비대면 상담을 신청하셨으므로 반드시 사전 구글폼을 작성해주세요.'
-            : '신청 일시에 맞추어 연구실(차미리사관 130호)로 방문해주세요.'}
+            : `신청 일시에 맞추어 연구실(${officeRoom})로 방문해주세요.`}
         </p>
 
         {/* Confirmation Code Card */}
@@ -61,6 +64,16 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
         <div className="w-full bg-neutral-50 rounded-2xl p-4 border border-neutral-200/80 text-left space-y-3 mb-5 text-xs sm:text-sm text-neutral-600">
           <div className="flex items-center justify-between">
             <span className="text-neutral-500 flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5 text-[#B70050]" />
+              <span>담당 지도교수</span>
+            </span>
+            <span className="font-bold text-neutral-900">
+              {appointment.professorName || '박성우 교수'}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-neutral-500 flex items-center gap-1.5">
               {isOnline ? (
                 <Video className="w-3.5 h-3.5 text-[#B70050]" />
               ) : (
@@ -69,7 +82,7 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
               <span>상담 유형</span>
             </span>
             <span className="font-bold text-[#B70050]">
-              {isOnline ? '비대면 상담 (구글폼 작성 필수)' : '대면 상담 (차미리사관 130호)'}
+              {isOnline ? '비대면 상담 (구글폼 작성 필수)' : '대면 상담'}
             </span>
           </div>
 

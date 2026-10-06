@@ -2,7 +2,22 @@ import { Timestamp } from 'firebase/firestore';
 
 export type ConsultationType = 'in_person' | 'online';
 
-export interface SemesterSettings {
+export interface ProfessorAttribution {
+  professorUid?: string;   // e.g. "admin-professor" or "prof-..."
+  professorName?: string;  // e.g. "박성우 교수"
+  professorEmail?: string; // e.g. "sungwoopark1224@gmail.com"
+}
+
+export interface ProfessorConsultationSettings {
+  professorUid: string;
+  professorEmail: string;
+  professorName: string;
+  onlineEnabled: boolean;
+  googleFormUrl: string;
+  updatedAt?: string;
+}
+
+export interface SemesterSettings extends ProfessorAttribution {
   id: string; // e.g. "2026-2"
   year: number;
   semester: 1 | 2;
@@ -22,7 +37,7 @@ export interface SemesterSettings {
 
 export type Weekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
 
-export interface ClassSchedule {
+export interface ClassSchedule extends ProfessorAttribution {
   id: string;
   semesterId: string;
   title: string;
@@ -34,7 +49,7 @@ export interface ClassSchedule {
   createdAt: Timestamp | string;
 }
 
-export interface PersonalSchedule {
+export interface PersonalSchedule extends ProfessorAttribution {
   id: string;
   semesterId: string;
   title: string;
@@ -48,7 +63,7 @@ export interface PersonalSchedule {
 export type AppointmentStatus = 'confirmed' | 'canceled';
 export type CancellationReason = 'professor_schedule_conflict' | 'class_schedule_change' | 'manual_admin_cancel' | 'student_cancel';
 
-export interface Appointment {
+export interface Appointment extends ProfessorAttribution {
   appointmentId: string;
   semesterId: string;
   studentName: string;
@@ -71,7 +86,7 @@ export interface Appointment {
 
 export type SlotLockType = 'appointment' | 'personal' | 'class';
 
-export interface SlotLock {
+export interface SlotLock extends ProfessorAttribution {
   id: string; // Document ID: `${date}_${time}` e.g. "2026-09-23_14:30"
   slotKey: string;
   date: string; // "YYYY-MM-DD"
@@ -82,7 +97,7 @@ export interface SlotLock {
   createdAt: Timestamp | string;
 }
 
-export interface StudentRecord {
+export interface StudentRecord extends ProfessorAttribution {
   id: string; // e.g. `${semesterId}_${studentId}`
   semesterId: string;
   studentId: string;
@@ -96,7 +111,7 @@ export interface AdminUser {
   uid: string;
   email: string;
   name?: string;
-  role: 'admin' | 'superadmin';
+  role: 'admin' | 'professor' | 'superadmin';
   createdAt: Timestamp | string;
 }
 
