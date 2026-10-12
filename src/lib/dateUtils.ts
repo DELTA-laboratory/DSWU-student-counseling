@@ -114,6 +114,7 @@ export function getNowSeoul(): { dateStr: string; timeStr: string; full: Date } 
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    hourCycle: 'h23',
   });
 
   const parts = seoulFormatter.formatToParts(now);

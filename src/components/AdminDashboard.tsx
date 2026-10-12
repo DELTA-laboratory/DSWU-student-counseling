@@ -159,8 +159,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Search & filter states
   const [studentSearch, setStudentSearch] = useState('');
-  const [appointmentFilter, setAppointmentFilter] = useState<'all' | 'confirmed' | 'canceled'>('all');
+  const [appointmentFilter, setAppointmentFilter] = useState<
+    'all' | 'confirmed' | 'completed' | 'canceled'
+  >('all');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [nowSeoul, setNowSeoul] = useState(() => getNowSeoul());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowSeoul(getNowSeoul());
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Modal / Form states
   const [showAddClass, setShowAddClass] = useState(false);
@@ -316,15 +326,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const myPersonalSchedules = personalSchedules.filter(isOwnedByCurrentProfessor);
   const myStudents = students.filter(isOwnedByCurrentProfessor);
 
+  // Helper: Check if a confirmed appointment's scheduled date/time has passed in Asia/Seoul
+  const isAppointmentCompleted = (apt: Appointment): boolean => {
+    if (apt.status !== 'confirmed') return false;
+    const scheduledDateTime = `${apt.date}T${apt.startTime}`;
+    const currentDateTime = `${nowSeoul.dateStr}T${nowSeoul.timeStr}`;
+    return scheduledDateTime <= currentDateTime;
+  };
+
   // Metrics computation (scoped to the logged-in professor)
   const confirmedCount = myAppointments.filter((a) => a.status === 'confirmed').length;
+  const completedCount = myAppointments.filter((a) => isAppointmentCompleted(a)).length;
   const canceledCount = myAppointments.filter((a) => a.status === 'canceled').length;
   const activeStudentsCount = myStudents.filter((s) => s.active).length;
 
-  // Upcoming confirmed appointment (scoped to the logged-in professor)
-  const nextAppointment = myAppointments
-    .filter((a) => a.status === 'confirmed')
-    .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))[0];
+  // Upcoming confirmed appointments (future relative to current Asia/Seoul date & time), sorted nearest first
+  const upcomingAppointments = myAppointments
+    .filter((a) => a.status === 'confirmed' && !isAppointmentCompleted(a))
+    .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
+
+  // Nearest future confirmed appointment (scoped to the logged-in professor)
+  const nextAppointment = upcomingAppointments[0];
 
   // ---------------- Handlers ----------------
 
@@ -779,7 +801,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Filtered Appointments (scoped to logged-in professor)
   const filteredAppointments = myAppointments.filter((a) => {
     if (appointmentFilter === 'all') return true;
-    return a.status === appointmentFilter;
+    if (appointmentFilter === 'confirmed') {
+      return a.status === 'confirmed' && !isAppointmentCompleted(a);
+    }
+    if (appointmentFilter === 'completed') {
+      return isAppointmentCompleted(a);
+    }
+    return a.status === 'canceled';
   });
 
   // Filtered Students (scoped to logged-in professor)
@@ -903,7 +931,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="bg-white p-5 rounded-2xl border border-neutral-200">
                 <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1">확정된 상담 신청</div>
                 <div className="text-xl font-bold text-[#B70050] tabular-nums">{confirmedCount}건</div>
-                <div className="text-[11px] text-neutral-400 mt-1 tabular-nums">취소 이력 {canceledCount}건 보존</div>
+                <div className="text-[11px] text-neutral-400 mt-1 tabular-nums">
+                  예정 {upcomingAppointments.length}건 · 완료 {completedCount}건 · 취소 {canceledCount}건
+                </div>
               </div>
 
               <div className="bg-white p-5 rounded-2xl border border-neutral-200">
@@ -914,7 +944,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     : '예정된 상담 없음'}
                 </div>
                 <div className="text-[11px] text-neutral-400 mt-1">
-                  {nextAppointment ? formatKoreanDate(nextAppointment.date) : '새로운 신청을 기다리는 중'}
+                  {nextAppointment ? formatKoreanDate(nextAppointment.date) : '현재 시각 이후 예정된 상담 없음'}
                 </div>
               </div>
             </div>
@@ -1034,26 +1064,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             )}
 
-            {/* Recent Confirmed Appointments List */}
+            {/* Upcoming Confirmed Appointments List (Max 10) */}
             <div className="bg-white rounded-2xl border border-neutral-200 p-6">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h2 className="text-base font-bold text-neutral-900">최근 상담 신청 현황</h2>
-                  <p className="text-xs text-neutral-500">학생들의 확정된 1:1 면담 일정입니다.</p>
+                  <h2 className="text-base font-bold text-neutral-900">최근 상담 신청 현황 (상담 예정 일정)</h2>
+                  <p className="text-xs text-neutral-500">
+                    현재 날짜 및 시간을 기준으로 앞으로 예정된 상담 일정만 최대 10건까지 표시됩니다. (지난 일정은 '상담 현황' 탭에서 확인 가능)
+                  </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setActiveTab('appointments')}
-                  className="text-xs font-bold text-[#B70050] hover:text-[#960041] flex items-center gap-1 cursor-pointer"
+                  className="text-xs font-bold text-[#B70050] hover:text-[#960041] flex items-center gap-1 cursor-pointer shrink-0"
                 >
                   <span>전체보기</span>
                   <ArrowUpRight className="w-3.5 h-3.5" />
                 </button>
               </div>
 
-              {myAppointments.length === 0 ? (
+              {upcomingAppointments.length === 0 ? (
                 <div className="text-center py-10 text-neutral-400 text-sm">
-                  아직 접수된 상담 신청이 없습니다.
+                  현재 날짜 및 시간 이후로 예정된 상담 일정이 없습니다.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -1069,7 +1101,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {myAppointments.slice(0, 5).map((apt) => (
+                      {upcomingAppointments.slice(0, 10).map((apt) => (
                         <tr key={apt.appointmentId} className="hover:bg-neutral-50/70">
                           <td className="py-3 px-3 font-medium text-neutral-900 tabular-nums">{apt.date}</td>
                           <td className="py-3 px-3 text-[#B70050] font-bold tabular-nums">
@@ -1093,14 +1125,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
                           <td className="py-3 px-3 text-neutral-600 tabular-nums">{apt.phone}</td>
                           <td className="py-3 px-3">
-                            <span
-                              className={`text-xs font-bold ${
-                                apt.status === 'confirmed'
-                                  ? 'text-[#B70050]'
-                                  : 'text-neutral-400'
-                              }`}
-                            >
-                              {apt.status === 'confirmed' ? '확정' : '취소됨'}
+                            <span className="text-xs font-bold text-[#B70050]">
+                              확정 (상담 예정)
                             </span>
                           </td>
                         </tr>
@@ -1126,8 +1152,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 {/* Filter toggle */}
-                <div className="flex items-center gap-1.5 bg-neutral-100 p-1 rounded-xl">
-                  {(['all', 'confirmed', 'canceled'] as const).map((f) => (
+                <div className="flex items-center gap-1.5 bg-neutral-100 p-1 rounded-xl flex-wrap">
+                  {(['all', 'confirmed', 'completed', 'canceled'] as const).map((f) => (
                     <button
                       key={f}
                       type="button"
@@ -1138,7 +1164,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           : 'text-neutral-500 hover:text-neutral-900'
                       }`}
                     >
-                      {f === 'all' ? '전체' : f === 'confirmed' ? '확정' : '취소'}
+                      {f === 'all'
+                        ? '전체'
+                        : f === 'confirmed'
+                        ? '확정'
+                        : f === 'completed'
+                        ? '상담완료'
+                        : '취소'}
                     </button>
                   ))}
                 </div>
@@ -1305,9 +1337,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <td className="py-3 px-3 font-mono text-neutral-500 tabular-nums">{apt.confirmationCode || '-'}</td>
                           <td className="py-3 px-3">
                             {apt.status === 'confirmed' ? (
-                              <span className="text-xs font-bold text-[#B70050]">
-                                확정
-                              </span>
+                              isAppointmentCompleted(apt) ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">
+                                  <CheckCircle className="w-3 h-3" />
+                                  상담완료
+                                </span>
+                              ) : (
+                                <span className="text-xs font-bold text-[#B70050]">
+                                  확정
+                                </span>
+                              )
                             ) : (
                               <div className="flex flex-col">
                                 <span className="text-xs font-semibold text-neutral-400">
