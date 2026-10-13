@@ -914,6 +914,32 @@ export async function sbSavePersonalScheduleWithAutoCancel(
   return insertedRow.id;
 }
 
+export async function sbSavePersonalSchedulesBatch(
+  items: Array<{
+    personalData: Omit<PersonalSchedule, 'id' | 'createdAt'>;
+    conflictAppointments?: Appointment[];
+  }>
+): Promise<{ addedCount: number; canceledAppointmentsCount: number }> {
+  let addedCount = 0;
+  const allCanceledIds = new Set<string>();
+
+  for (const item of items) {
+    try {
+      const conflicts = item.conflictAppointments || [];
+      await sbSavePersonalScheduleWithAutoCancel(item.personalData, conflicts);
+      addedCount++;
+      conflicts.forEach((c) => allCanceledIds.add(c.appointmentId));
+    } catch (err) {
+      console.error('Error saving personal schedule batch item:', err);
+    }
+  }
+
+  return {
+    addedCount,
+    canceledAppointmentsCount: allCanceledIds.size,
+  };
+}
+
 export async function sbDeletePersonalSchedule(schedule: PersonalSchedule): Promise<void> {
   if (!supabase) return;
   await supabase.from('personal_schedules').delete().eq('id', schedule.id);

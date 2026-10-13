@@ -26,8 +26,10 @@ import {
   UserPlus,
   KeyRound,
   Lock,
+  CalendarDays,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { IcsImportModal } from './IcsImportModal';
 import {
   SemesterSettings,
   Appointment,
@@ -176,6 +178,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showAddClass, setShowAddClass] = useState(false);
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
   const [showAddPersonal, setShowAddPersonal] = useState(false);
+  const [showIcsImportModal, setShowIcsImportModal] = useState(false);
   const [editingPersonalSchedule, setEditingPersonalSchedule] = useState<PersonalSchedule | null>(null);
   const [showAddStudents, setShowAddStudents] = useState(false);
   const [editingStudent, setEditingStudent] = useState<StudentRecord | null>(null);
@@ -495,6 +498,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } catch (err) {
       showNotification('error', '처리 중 오류가 발생했습니다.');
     }
+  };
+
+  const handleIcsImportSuccess = (count: number, canceledCount: number) => {
+    showNotification(
+      'success',
+      canceledCount > 0
+        ? `Google 캘린더에서 총 ${count}건의 개인 일정이 등록되었으며, 충돌하는 학생 상담 ${canceledCount}건이 안전하게 자동 취소 처리되었습니다.`
+        : `Google 캘린더에서 총 ${count}건의 개인 일정이 현재 학기 기간 내로 성공적으로 등록되었습니다.`
+    );
+    onRefresh();
   };
 
   const handleDeletePersonal = async (sch: PersonalSchedule) => {
@@ -1565,32 +1578,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     일정 제목과 메모는 학생에게 절대 노출되지 않으며, 등록·수정 시 충돌하는 상담 신청은 자동으로 취소 및 차단됩니다.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingPersonalSchedule(null);
-                    setNewPersonal({
-                      title: '',
-                      note: '',
-                      date: getNowSeoul().dateStr,
-                      startTime: '14:00',
-                      endTime: '15:30',
-                    });
-                    setShowAddPersonal(!showAddPersonal);
-                  }}
-                  className="px-3.5 py-2 bg-[#B70050] hover:bg-[#960041] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>개인 일정 추가</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowIcsImportModal(true)}
+                    className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 border border-neutral-200 hover:border-[#B70050] rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer group"
+                    title="Google 캘린더에서 내보낸 .ics 파일을 첨부하여 학기 내 일정을 일괄 등록합니다"
+                  >
+                    <CalendarDays className="w-4 h-4 text-[#B70050] group-hover:scale-110 transition-transform" />
+                    <span>Google 캘린더 (.ics) 불러오기</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingPersonalSchedule(null);
+                      setNewPersonal({
+                        title: '',
+                        note: '',
+                        date: getNowSeoul().dateStr,
+                        startTime: '14:00',
+                        endTime: '15:30',
+                      });
+                      setShowAddPersonal(!showAddPersonal);
+                    }}
+                    className="px-3.5 py-2 bg-[#B70050] hover:bg-[#960041] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>개인 일정 추가</span>
+                  </button>
+                </div>
               </div>
 
               {/* Add / Edit Personal Form */}
               {showAddPersonal && (
                 <form onSubmit={handlePreCheckPersonal} className="p-4 bg-[#FDF2F6]/60 rounded-xl border border-[#F5C2D7] mb-6 space-y-4">
-                  <h3 className="text-xs font-bold text-[#B70050] uppercase">
-                    {editingPersonalSchedule ? '기존 개인 일정 수정' : '개인 일정 등록'}
-                  </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-xs font-bold text-[#B70050] uppercase">
+                      {editingPersonalSchedule ? '기존 개인 일정 수정' : '개인 일정 등록'}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setShowIcsImportModal(true)}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#B70050] hover:text-[#960041] bg-white px-2.5 py-1 rounded-md border border-[#F5C2D7] cursor-pointer transition-colors shadow-2xs"
+                    >
+                      <CalendarDays className="w-3.5 h-3.5" />
+                      <span>Google 캘린더 .ics 일괄 추가</span>
+                    </button>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
                     <div>
                       <label className="block text-neutral-600 mb-1">날짜</label>
@@ -2379,6 +2413,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* GOOGLE CALENDAR (.ICS) IMPORT MODAL */}
+      {showIcsImportModal && semester && (
+        <IcsImportModal
+          isOpen={showIcsImportModal}
+          onClose={() => setShowIcsImportModal(false)}
+          semester={semester}
+          existingPersonalSchedules={personalSchedules}
+          existingAppointments={appointments}
+          currentProfessor={currentProfAttribution}
+          onImportSuccess={handleIcsImportSuccess}
+        />
       )}
     </div>
   );

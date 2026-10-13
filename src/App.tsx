@@ -355,7 +355,7 @@ export default function App() {
 
       return () => {
         window.removeEventListener('focus', handleWindowFocus);
-        supabase.removeChannel(channel);
+        supabase?.removeChannel(channel);
       };
     }
 
@@ -406,7 +406,7 @@ export default function App() {
         .subscribe();
 
       return () => {
-        supabase.removeChannel(channel);
+        supabase?.removeChannel(channel);
       };
     }
 

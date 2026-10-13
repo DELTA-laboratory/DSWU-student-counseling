@@ -30,6 +30,7 @@ import {
   sbGetPersonalSchedules,
   sbCheckPersonalScheduleConflicts,
   sbSavePersonalScheduleWithAutoCancel,
+  sbSavePersonalSchedulesBatch,
   sbUpdatePersonalSchedule,
   sbDeletePersonalSchedule,
   sbGetStudents,
@@ -359,6 +360,36 @@ export async function savePersonalScheduleWithAutoCancel(
 
   await batch.commit();
   return personalRef.id;
+}
+
+export async function savePersonalSchedulesBatch(
+  items: Array<{
+    personalData: Omit<PersonalSchedule, 'id' | 'createdAt'>;
+    conflictAppointments?: Appointment[];
+  }>
+): Promise<{ addedCount: number; canceledAppointmentsCount: number }> {
+  if (isSupabaseConfigured) {
+    return sbSavePersonalSchedulesBatch(items);
+  }
+
+  let addedCount = 0;
+  const allCanceledIds = new Set<string>();
+
+  for (const item of items) {
+    try {
+      const conflicts = item.conflictAppointments || [];
+      await savePersonalScheduleWithAutoCancel(item.personalData, conflicts);
+      addedCount++;
+      conflicts.forEach((c) => allCanceledIds.add(c.appointmentId));
+    } catch (err) {
+      console.error('Error saving personal schedule batch item (Firestore):', err);
+    }
+  }
+
+  return {
+    addedCount,
+    canceledAppointmentsCount: allCanceledIds.size,
+  };
 }
 
 export async function deletePersonalSchedule(schedule: PersonalSchedule): Promise<void> {
